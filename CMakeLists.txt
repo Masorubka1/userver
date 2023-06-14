@@ -115,6 +115,7 @@ option(USERVER_FEATURE_CLICKHOUSE "Provide asynchronous driver for ClickHouse" $
 option(USERVER_FEATURE_RABBITMQ "Provide asynchronous driver for RabbitMQ" ${USERVER_FEATURE_CORE})
 option(USERVER_FEATURE_MYSQL "Provide asynchronous driver for MariaDB/MySQL" OFF)
 option(USERVER_FEATURE_UBOOST_CORO "Use vendored boost context instead of a system one" ON)
+option(USERVER_FEATURE_AEROSPIKE "Provide synchronous driver for Aerspyke" OFF)
 
 if (USERVER_FEATURE_GRPC)
     include(cmake/SetupProtobuf.cmake)
@@ -171,6 +172,10 @@ endif()
 if (USERVER_FEATURE_MYSQL)
     require_userver_core("USERVER_FEATURE_MYSQL")
     add_subdirectory(mysql "${CMAKE_BINARY_DIR}/userver/mysql")
+endif()
+
+if (USERVER_FEATURE_AEROSPIKE)
+  add_subdirectory(aerospike "${CMAKE_BINARY_DIR}/userver/aerospike")
 endif()
 
 if (USERVER_IS_THE_ROOT_PROJECT AND USERVER_FEATURE_CORE)
