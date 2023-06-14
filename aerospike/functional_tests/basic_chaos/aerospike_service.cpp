@@ -42,7 +42,7 @@ class KeyValue final : public server::handlers::HttpHandlerBase {
   std::string DeleteValue(std::string_view aerospike_namespace, std::string_view aerospike_set) const;
 
   storages::aerospike::Client aerospike_client_;
-  //storages::redis::CommandControl redis_cc_;
+  //storages::redis::CommandControl aerospike_cc_;
 };
 
 KeyValue::KeyValue(const components::ComponentConfig& config,
@@ -51,7 +51,7 @@ KeyValue::KeyValue(const components::ComponentConfig& config,
       aerospike_client_{
           context.FindComponent<components::Aerospike>("key-value-database")
               .GetClient("test")} {}
-      //redis_cc_{std::chrono::seconds{15}, std::chrono::seconds{60}, 4} {}
+      aerospike_cc_{std::chrono::seconds{15}, std::chrono::seconds{60}, 4} {}
 
 std::string KeyValue::HandleRequestThrow(
     const server::http::HttpRequest& request,
@@ -90,9 +90,9 @@ std::string KeyValue::HandleRequestThrow(
 
 std::string KeyValue::GetValue(std::string_view key,
                                const server::http::HttpRequest& request) const {
-  auto redis_request = redis_client_->Get(std::string{key}, redis_cc_);
+  auto aerospike_request = aerospike_client_->Get(std::string{key}, aerospike_cc_);
   try {
-    const auto result = redis_request.Get();
+    const auto result = aerospike_request.Get();
     if (!result) {
       request.SetResponseStatus(server::http::HttpStatus::kNotFound);
       return {};
@@ -111,10 +111,10 @@ std::string KeyValue::GetValue(std::string_view key,
 std::string KeyValue::PostValue(
     std::string_view key, const server::http::HttpRequest& request) const {
   const auto& value = request.GetArg("value");
-  auto redis_request =
-      redis_client_->SetIfNotExist(std::string{key}, value, redis_cc_);
+  auto aerospike_request =
+      aerospike_client_->SetIfNotExist(std::string{key}, value, aerospike_cc_);
   try {
-    const auto result = redis_request.Get();
+    const auto result = aerospike_request.Get();
     if (!result) {
       request.SetResponseStatus(server::http::HttpStatus::kConflict);
       return {};
@@ -133,7 +133,7 @@ std::string KeyValue::PostValue(
 }
 
 std::string KeyValue::DeleteValue(std::string_view key) const {
-  const auto result = redis_client_->Del(std::string{key}, redis_cc_).Get();
+  const auto result = aerospike_client_->Del(std::string{key}, aerospike_cc_).Get();
   return std::to_string(result);
 }
 

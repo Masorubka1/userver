@@ -24,10 +24,10 @@ def master_gate_settings() -> typing.Tuple[str, int]:
 @pytest.fixture(scope='session')
 def service_env(
         sentinel_gate_settings,
-        _redis_service_settings: service.ServiceSettings,
+        _aerospike_service_settings: service.ServiceSettings,
 ):
     secdist_config = {
-        'redis_settings': {
+        'aerospike_settings': {
             'test': {
                 'password': '',
                 'sentinels': [
@@ -47,14 +47,14 @@ def service_env(
 async def _sentinel_gate(
         loop,
         sentinel_gate_settings,
-        _redis_service_settings: service.ServiceSettings,
+        _aerospike_service_settings: service.ServiceSettings,
 ):
     gate_config = chaos.GateRoute(
         name='sentinel proxy',
         host_for_client=sentinel_gate_settings[0],
         port_for_client=sentinel_gate_settings[1],
-        host_to_server=_redis_service_settings.host,
-        port_to_server=_redis_service_settings.sentinel_port,
+        host_to_server=_aerospike_service_settings.host,
+        port_to_server=_aerospike_service_settings.sentinel_port,
     )
     async with chaos.TcpGate(gate_config, loop) as proxy:
         yield proxy
@@ -65,9 +65,9 @@ async def _sentinel_gate_ready(
         service_client,
         _sentinel_gate,
         _master_gate,
-        _redis_service_settings: service.ServiceSettings,
+        _aerospike_service_settings: service.ServiceSettings,
 ):
-    port = str(_redis_service_settings.master_ports[0])
+    port = str(_aerospike_service_settings.master_ports[0])
     ptrn = r'\r\nip\r\n\$\d+\r\n\S+\r\n\$4\r\nport\r\n\$%d\r\n%s\r\n' % (
         len(port),
         port,
@@ -93,14 +93,14 @@ async def _sentinel_gate_ready(
 async def _master_gate(
         loop,
         master_gate_settings,
-        _redis_service_settings: service.ServiceSettings,
+        _aerospike_service_settings: service.ServiceSettings,
 ):
     gate_config = chaos.GateRoute(
         name='master proxy',
         host_for_client=master_gate_settings[0],
         port_for_client=master_gate_settings[1],
-        host_to_server=_redis_service_settings.host,
-        port_to_server=_redis_service_settings.master_ports[0],
+        host_to_server=_aerospike_service_settings.host,
+        port_to_server=_aerospike_service_settings.master_ports[0],
     )
     async with chaos.TcpGate(gate_config, loop) as proxy:
         yield proxy

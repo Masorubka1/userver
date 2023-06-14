@@ -11,31 +11,31 @@
     "cancel-request": false,
     "update-timeout": false
   },
-  "REDIS_CLUSTER_AUTOTOPOLOGY_ENABLED": false,
-  "REDIS_COMMANDS_BUFFERING_SETTINGS": {
+  "AEROSPIKE_CLUSTER_AUTOTOPOLOGY_ENABLED": false,
+  "AEROSPIKE_COMMANDS_BUFFERING_SETTINGS": {
     "buffering_enabled": false,
     "watch_command_timer_interval_us": 0
   },
-  "REDIS_DEADLINE_PROPAGATION_ENABLED": true,
-  "REDIS_DEFAULT_COMMAND_CONTROL": {},
-  "REDIS_METRICS_SETTINGS": {
+  "AEROSPIKE_DEADLINE_PROPAGATION_ENABLED": true,
+  "AEROSPIKE_DEFAULT_COMMAND_CONTROL": {},
+  "AEROSPIKE_METRICS_SETTINGS": {
     "command-timings-enabled": true,
     "reply-sizes-enabled": true,
     "request-sizes-enabled": true,
     "timings-enabled": true
   },
-  "REDIS_PUBSUB_METRICS_SETTINGS": {
+  "AEROSPIKE_PUBSUB_METRICS_SETTINGS": {
     "per-shard-stats-enabled": true
   },
-  "REDIS_REPLICA_MONITORING_SETTINGS": {
+  "AEROSPIKE_REPLICA_MONITORING_SETTINGS": {
     "__default__": {
       "enable-monitoring": true,
       "forbid-requests-to-syncing-replicas": true
     }
   },
-  "REDIS_SUBSCRIBER_DEFAULT_COMMAND_CONTROL": {},
-  "REDIS_SUBSCRIPTIONS_REBALANCE_MIN_INTERVAL_SECONDS": 30,
-  "REDIS_WAIT_CONNECTED": {
+  "AEROSPIKE_SUBSCRIBER_DEFAULT_COMMAND_CONTROL": {},
+  "AEROSPIKE_SUBSCRIPTIONS_REBALANCE_MIN_INTERVAL_SECONDS": 30,
+  "AEROSPIKE_WAIT_CONNECTED": {
     "mode": "master_or_slave",
     "throw_on_fail": false,
     "timeout-ms": 11000
