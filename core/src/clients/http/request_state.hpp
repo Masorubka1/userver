@@ -52,19 +52,16 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
 
   using Queue = concurrent::StringStreamQueue;
 
-  enum class AsyncType {
-    kFullyBuffered,
-    kStreamed,
-  };
-
   /// Perform async http request
   engine::Future<std::shared_ptr<Response>> async_perform(
       utils::impl::SourceLocation location =
           utils::impl::SourceLocation::Current());
 
-  void async_perform_stream(const std::shared_ptr<Queue>& queue,
-                            utils::impl::SourceLocation location =
-                                utils::impl::SourceLocation::Current());
+  /// Perform streaming http request, returns headers future
+  engine::Future<void> async_perform_stream(
+      const std::shared_ptr<Queue>& queue,
+      utils::impl::SourceLocation location =
+          utils::impl::SourceLocation::Current());
 
   /// set redirect flags
   void follow_redirects(bool follow);
@@ -92,13 +89,20 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
   void proxy(const std::string& value);
   /// sets proxy auth type to use
   void proxy_auth_type(curl::easy::proxyauth_t value);
+  /// sets proxy auth type and credentials to use
+  void http_auth_type(curl::easy::httpauth_t value, bool auth_only,
+                      std::string_view user, std::string_view password);
 
   /// get timeout value in milliseconds
   long timeout() const { return original_timeout_.count(); }
-  /// get final timeout value in milliseconds
-  long effective_timeout() const { return effective_timeout_.count(); }
   /// get retries count
   short retries() const { return retry_.retries; }
+
+  engine::Deadline GetDeadline() const noexcept;
+  /// true iff *we detected* that the deadline has expired
+  bool IsDeadlineExpired() const noexcept;
+
+  [[noreturn]] void ThrowDeadlineExpiredException();
 
   /// cancel request
   void Cancel();
@@ -115,8 +119,6 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
 
   void SetDeadlinePropagationConfig(
       const impl::DeadlinePropagationConfig& deadline_propagation_config);
-
-  std::shared_ptr<impl::EasyWrapper> easy_wrapper() { return easy_; }
 
   curl::easy& easy() { return easy_->Easy(); }
   const curl::easy& easy() const { return easy_->Easy(); }
@@ -139,7 +141,7 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
   /// header function curl callback
   static size_t on_header(void* ptr, size_t size, size_t nmemb, void* userdata);
 
-  /// certifiacte function curl callback
+  /// certificate function curl callback
   static curl::native::CURLcode on_certificate_request(void* curl, void* sslctx,
                                                        void* userdata) noexcept;
 
@@ -148,12 +150,18 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
   void ParseSingleCookie(const char* ptr, size_t size);
   /// simply run perform_request if there is now errors from timer
   void on_retry_timer(std::error_code err);
-  /// run curl async_request
+  /// run curl async_request, called once per attempt
   void perform_request(curl::easy::handler_type handler);
 
-  void UpdateTimeoutFromDeadline();
+  void UpdateTimeoutFromDeadline(std::chrono::milliseconds backoff);
+  [[nodiscard]] bool UpdateTimeoutFromDeadlineAndCheck(
+      std::chrono::milliseconds backoff = {});
   void UpdateTimeoutHeader();
-  std::exception_ptr PrepareDeadlineAlreadyPassedException();
+  void HandleDeadlineAlreadyPassed();
+  void CheckResponseDeadline(std::error_code& err, Status status_code);
+  bool IsDeadlineExpiredResponse(Status status_code);
+  bool ShouldRetryResponse();
+
   const std::string& GetLoggedOriginalUrl() const noexcept;
 
   static size_t StreamWriteFunction(char* ptr, size_t size, size_t nmemb,
@@ -161,9 +169,8 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
 
   void AccountResponse(std::error_code err);
   std::exception_ptr PrepareException(std::error_code err);
-  std::exception_ptr PrepareDeadlinePassedException(std::string_view url);
 
-  engine::Future<std::shared_ptr<Response>> StartNewPromise();
+  void ResetDataForNewRequest();
   void ApplyTestsuiteConfig();
   void StartNewSpan(utils::impl::SourceLocation location);
   void StartStats();
@@ -172,7 +179,6 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
   void WithRequestStats(const Func& func);
 
   void ResolveTargetAddress(clients::dns::Resolver& resolver);
-  bool IsStreamBody() const;
 
   /// curl handler wrapper
   std::shared_ptr<impl::EasyWrapper> easy_;
@@ -194,13 +200,15 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
 
   /// the timeout value provided by user (or the default)
   std::chrono::milliseconds original_timeout_;
-  /// the timeout, possibly updated by deadline propagation
-  std::chrono::milliseconds effective_timeout_;
+  /// the timeout propagated to the downstream service
+  std::chrono::milliseconds remote_timeout_;
 
   impl::DeadlinePropagationConfig deadline_propagation_config_;
-  bool timeout_updated_by_deadline_{false};
   /// deadline from current task
   engine::Deadline deadline_;
+  bool timeout_updated_by_deadline_{false};
+  bool deadline_expired_{false};
+
   utils::NotNull<const tracing::TracingManagerBase*> tracing_manager_;
   const server::http::HeadersPropagator* headers_propagator_{nullptr};
   /// struct for reties
@@ -227,14 +235,11 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
 
   struct StreamData {
     StreamData(Queue::Producer&& queue_producer)
-        : queue_producer(std::move(queue_producer)),
-          headers_promise_set(false),
-          headers_future(headers_promise.get_future()) {}
+        : queue_producer(std::move(queue_producer)) {}
 
     Queue::Producer queue_producer;
-    std::atomic<bool> headers_promise_set;
+    std::atomic<bool> headers_promise_set{false};
     engine::Promise<void> headers_promise;
-    engine::Future<void> headers_future;
   };
 
   struct FullBufferedData {
@@ -242,8 +247,6 @@ class RequestState : public std::enable_shared_from_this<RequestState> {
   };
 
   std::variant<FullBufferedData, StreamData> data_;
-
-  friend class StreamedResponse;
 };
 
 }  // namespace clients::http

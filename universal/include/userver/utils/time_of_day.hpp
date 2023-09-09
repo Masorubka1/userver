@@ -22,7 +22,7 @@ class LogHelper;
 
 namespace utils::datetime {
 
-/// @ingroup userver_containers
+/// @ingroup userver_universal userver_containers
 ///
 /// @brief A simple implementation of a "time since midnight" datatype.
 ///
@@ -170,7 +170,7 @@ template <>
 inline constexpr const std::size_t kDecimalPositions<std::nano> = 9;
 
 constexpr std::intmax_t MissingDigits(std::size_t n) {
-  // As we support resolutions up to nano, all wee need is up to 10^9
+  // As we support resolutions up to nano, all we need is up to 10^9
   // clang-format off
   constexpr std::intmax_t powers[]{
       1,

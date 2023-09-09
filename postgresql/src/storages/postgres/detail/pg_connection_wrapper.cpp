@@ -10,6 +10,7 @@ auto PQXisBusy(PGconn* conn) { return ::PQisBusy(conn); }
 auto PQXgetResult(PGconn* conn) { return ::PQgetResult(conn); }
 #endif
 
+#include <crypto/openssl.hpp>
 #include <userver/concurrent/background_task_storage.hpp>
 #include <userver/engine/task/cancel.hpp>
 #include <userver/logging/log.hpp>
@@ -103,6 +104,17 @@ void NoticeReceiver(void* conn_wrapper_ptr, PGresult const* pg_res) {
   conn_wrapper->LogNotice(pg_res);
 }
 
+struct Openssl {
+  static void Init() noexcept { [[maybe_unused]] static Openssl lock; }
+
+ private:
+  Openssl() {
+    // When using OpenSSL < 1.1 duplicate initialization can be problematic
+    PQinitSSL(0);
+    crypto::impl::Openssl::Init();
+  }
+};
+
 }  // namespace
 
 PGConnectionWrapper::PGConnectionWrapper(
@@ -114,7 +126,7 @@ PGConnectionWrapper::PGConnectionWrapper(
                  {"pg_conn_id", id}},
       pool_size_lock_{std::move(pool_size_lock)},
       last_use_{std::chrono::steady_clock::now()} {
-  // TODO add SSL initialization
+  Openssl::Init();
 }
 
 PGConnectionWrapper::~PGConnectionWrapper() {
@@ -389,14 +401,14 @@ void PGConnectionWrapper::EnterPipelineMode() {
         << "libpq failed to enter pipeline connection mode";
     throw ConnectionError{"Failed to enter pipeline connection mode"};
   }
-  PGCW_LOG_DEBUG() << "Entered pipeline mode";
+  PGCW_LOG_INFO() << "Entered pipeline mode";
 #else
   UINVARIANT(false, "Pipeline mode is not supported");
 #endif
 }
 
 bool PGConnectionWrapper::IsSyncingPipeline() const {
-  return is_syncing_pipeline_;
+  return pipeline_sync_counter_ > 0;
 }
 
 bool PGConnectionWrapper::IsPipelineActive() const {
@@ -437,7 +449,7 @@ void PGConnectionWrapper::Flush(Deadline deadline) {
   if (PQpipelineStatus(conn_) != PQ_PIPELINE_OFF) {
     HandleSocketPostClose();
     CheckError<CommandError>("PQpipelineSync", PQpipelineSync(conn_));
-    is_syncing_pipeline_ = true;
+    ++pipeline_sync_counter_;
   }
 #endif
   while (const int flush_res = PQflush(conn_)) {
@@ -455,6 +467,14 @@ void PGConnectionWrapper::Flush(Deadline deadline) {
     }
     UpdateLastUse();
   }
+}
+
+void PGConnectionWrapper::HandlePipelineSync() {
+  if (!pipeline_sync_counter_) {
+    MarkAsBroken();
+    throw LogicError{"Pipeline out of sync"};
+  }
+  --pipeline_sync_counter_;
 }
 
 bool PGConnectionWrapper::TryConsumeInput(Deadline deadline) {
@@ -492,26 +512,19 @@ ResultSet PGConnectionWrapper::WaitResult(Deadline deadline,
   do {
     while (auto* pg_res = ReadResult(deadline)) {
       null_res_counter = 0;
-      if (handle && !is_syncing_pipeline_) {
+      if (handle && !pipeline_sync_counter_) {
         // TODO Decide about the severity of this situation
         PGCW_LOG_LIMITED_INFO()
             << "Query returned several result sets, a result set is discarded";
       }
       auto next_handle = MakeResultHandle(pg_res);
 #if LIBPQ_HAS_PIPELINING
-      if (is_syncing_pipeline_) {
-        switch (PQresultStatus(next_handle.get())) {
-          case PGRES_PIPELINE_SYNC:
-            is_syncing_pipeline_ = false;
-            [[fallthrough]];
-          case PGRES_PIPELINE_ABORTED:
-            continue;
-          default:
-            break;
-        }
-      }
+      const auto status = PQresultStatus(pg_res);
+      if (status == PGRES_PIPELINE_SYNC)
+        HandlePipelineSync();
+      else if (status != PGRES_PIPELINE_ABORTED)
 #endif
-      handle = std::move(next_handle);
+        handle = std::move(next_handle);
     }
     // There is an issue with libpq when db shuts down we may receive an error
     // instead of PGRES_PIPELINE_SYNC and never get out of this cycle, hence
@@ -519,9 +532,9 @@ ResultSet PGConnectionWrapper::WaitResult(Deadline deadline,
     if (++null_res_counter > 2) {
       MarkAsBroken();
       if (!handle) throw RuntimeError{"Empty result"};
-      is_syncing_pipeline_ = false;
+      pipeline_sync_counter_ = 0;
     }
-  } while (is_syncing_pipeline_ && PQstatus(conn_) != CONNECTION_BAD);
+  } while (IsSyncingPipeline() && PQstatus(conn_) != CONNECTION_BAD);
 
   return MakeResult(std::move(handle));
 }
@@ -535,22 +548,24 @@ void PGConnectionWrapper::DiscardInput(Deadline deadline) {
       null_res_counter = 0;
       handle = MakeResultHandle(pg_res);
 #if LIBPQ_HAS_PIPELINING
-      if (is_syncing_pipeline_ &&
-          PQresultStatus(handle.get()) == PGRES_PIPELINE_SYNC) {
-        is_syncing_pipeline_ = false;
+      if (PQresultStatus(pg_res) == PGRES_PIPELINE_SYNC) {
+        HandlePipelineSync();
       }
 #endif
     }
     // Same issue as with WaitResult
     if (++null_res_counter > 2) {
       MarkAsBroken();
-      is_syncing_pipeline_ = false;
+      pipeline_sync_counter_ = 0;
     }
-  } while (is_syncing_pipeline_ && PQstatus(conn_) != CONNECTION_BAD);
+  } while (IsSyncingPipeline() && PQstatus(conn_) != CONNECTION_BAD);
 }
 
 void PGConnectionWrapper::FillSpanTags(tracing::Span& span) const {
-  span.AddTags(log_extra_, USERVER_NAMESPACE::utils::InternalTag{});
+  // With inheritable tags, they would end up being duplicated in current Span
+  // and in log_extra_ (passed by PGCW_LOG_ macros).
+  span.AddNonInheritableTags(log_extra_,
+                             USERVER_NAMESPACE::utils::InternalTag{});
 }
 
 PGresult* PGConnectionWrapper::ReadResult(Deadline deadline) {
@@ -798,6 +813,14 @@ TimeoutDuration PGConnectionWrapper::GetIdleDuration() const {
 void PGConnectionWrapper::MarkAsBroken() { is_broken_ = true; }
 
 bool PGConnectionWrapper::IsBroken() const { return is_broken_; }
+
+bool PGConnectionWrapper::IsInAbortedPipeline() const {
+#if LIBPQ_HAS_PIPELINING
+  return PQpipelineStatus(conn_) == PGpipelineStatus::PQ_PIPELINE_ABORTED;
+#else
+  return false;
+#endif
+}
 
 }  // namespace storages::postgres::detail
 

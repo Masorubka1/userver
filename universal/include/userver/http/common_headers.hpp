@@ -4,6 +4,7 @@
 
 /// @file userver/http/common_headers.hpp
 /// @brief Common HTTP header names
+/// @ingroup userver_universal
 
 USERVER_NAMESPACE_BEGIN
 
@@ -114,9 +115,17 @@ inline constexpr PredefinedHeader kServer{"Server"};
 inline constexpr PredefinedHeader kSetCookie{"Set-Cookie"};
 /// @}
 
+/// @name Websockets headers
+/// @{
+inline constexpr PredefinedHeader kWebsocketKey{"Sec-WebSocket-Key"};
+inline constexpr PredefinedHeader kWebsocketAccept{"Sec-WebSocket-Accept"};
+inline constexpr PredefinedHeader kWebsocketVersion{"Sec-WebSocket-Version"};
+/// @}
+
 /// @name Extra headers
 /// @{
 inline constexpr PredefinedHeader kConnection{"Connection"};
+inline constexpr PredefinedHeader kUpgrade{"Upgrade"};
 inline constexpr PredefinedHeader kCookie{"Cookie"};
 /// @}
 
@@ -154,6 +163,8 @@ inline constexpr PredefinedHeader kXYaTaxiServerHostname{
     "X-YaTaxi-Server-Hostname"};
 inline constexpr PredefinedHeader kXYaTaxiClientTimeoutMs{
     "X-YaTaxi-Client-TimeoutMs"};
+inline constexpr PredefinedHeader kXYaTaxiDeadlineExpired{
+    "X-YaTaxi-Deadline-Expired"};
 inline constexpr PredefinedHeader kXYaTaxiRatelimitedBy{
     "X-YaTaxi-Ratelimited-By"};
 inline constexpr PredefinedHeader kXYaTaxiRatelimitReason{

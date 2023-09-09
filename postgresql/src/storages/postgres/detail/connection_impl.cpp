@@ -14,6 +14,8 @@
 #include <storages/postgres/io/pg_type_parsers.hpp>
 #include <userver/storages/postgres/exceptions.hpp>
 
+#include <utils/impl/assert_extra.hpp>
+
 USERVER_NAMESPACE_BEGIN
 
 namespace storages::postgres::detail {
@@ -197,14 +199,14 @@ void ConnectionImpl::AsyncConnect(const Dsn& dsn, engine::Deadline deadline) {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           deadline.TimeLeft()));
   conn_wrapper_.AsyncConnect(dsn, deadline, scope);
-  if (settings_.pipeline_mode == PipelineMode::kEnabled &&
-      kPipelineExperiment.IsEnabled()) {
-    conn_wrapper_.EnterPipelineMode();
-  }
   conn_wrapper_.FillSpanTags(span);
   scope.Reset(scopes::kGetConnectData);
   // We cannot handle exceptions here, so we let them got to the caller
   ExecuteCommandNoPrepare("DISCARD ALL", deadline);
+  if (settings_.pipeline_mode == PipelineMode::kEnabled &&
+      kPipelineExperiment.IsEnabled()) {
+    conn_wrapper_.EnterPipelineMode();
+  }
   SetParameter("client_encoding", "UTF8", Connection::ParameterScope::kSession,
                deadline);
   RefreshReplicaState(deadline);
@@ -218,6 +220,10 @@ void ConnectionImpl::Close() { conn_wrapper_.Close().Wait(); }
 
 int ConnectionImpl::GetServerVersion() const {
   return conn_wrapper_.GetServerVersion();
+}
+
+bool ConnectionImpl::IsInAbortedPipeline() const {
+  return conn_wrapper_.IsInAbortedPipeline();
 }
 
 bool ConnectionImpl::IsInRecovery() const { return is_in_recovery_; }
@@ -507,6 +513,11 @@ void ConnectionImpl::CancelAndCleanup(TimeoutDuration timeout) {
     cancel.WaitUntil(deadline);
   }
 
+  // DiscardInput could have marked connection as broken
+  if (IsBroken()) {
+    return;
+  }
+
   // We might need more timeout here
   // We are no more bound with SLA, user has his exception.
   // It's better to keep this connection alive than recreating it, because
@@ -567,6 +578,10 @@ void ConnectionImpl::CheckBusy() const {
   if ((GetConnectionState() == ConnectionState::kTranActive) &&
       (!IsPipelineActive() || conn_wrapper_.IsSyncingPipeline())) {
     throw ConnectionBusy("There is another query in flight");
+  }
+  if (IsInAbortedPipeline()) {  // TODO: TAXICOMMON-6886
+    USERVER_NAMESPACE::utils::impl::AbortWithStacktrace(
+        "Using an aborted connection is illegal");
   }
 }
 
@@ -805,7 +820,7 @@ void ConnectionImpl::SetParameter(std::string_view name, std::string_view value,
               << (is_transaction_scope ? "transaction" : "session") << " scope";
   StaticQueryParameters<3> params;
   params.Write(db_types_, name, value, is_transaction_scope);
-  if (IsPipelineActive() && IsInTransaction()) {
+  if (IsPipelineActive()) {
     SendCommandNoPrepare("SELECT set_config($1, $2, $3)",
                          detail::QueryParameters{params}, deadline);
   } else {

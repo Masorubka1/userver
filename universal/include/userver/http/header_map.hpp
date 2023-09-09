@@ -20,6 +20,8 @@ namespace header_map {
 class Map;
 }
 
+/// @ingroup userver_universal userver_containers
+///
 /// @brief Container that maps case-insensitive header name into header value.
 ///
 /// Allows storing up to 24576 name->value pairs, after that an attempt to
@@ -97,7 +99,7 @@ class HeaderMap final {
   std::size_t count(const PredefinedHeader& key) const noexcept;
 
   template <std::size_t Size>
-  std::size_t count(const char (&)[Size]) const noexcept {
+  [[noreturn]] std::size_t count(const char (&)[Size]) const noexcept {
     ReportMisuse<Size>();
   }
 
@@ -107,7 +109,7 @@ class HeaderMap final {
   bool contains(const PredefinedHeader& key) const noexcept;
 
   template <std::size_t Size>
-  bool contains(const char (&)[Size]) const noexcept {
+  [[noreturn]] bool contains(const char (&)[Size]) const noexcept {
     ReportMisuse<Size>();
   }
 
@@ -125,7 +127,7 @@ class HeaderMap final {
   std::string& operator[](const PredefinedHeader& key);
 
   template <std::size_t Size>
-  std::string& operator[](const char (&)[Size]) {
+  [[noreturn]] std::string& operator[](const char (&)[Size]) {
     ReportMisuse<Size>();
   }
 
@@ -222,11 +224,11 @@ class HeaderMap final {
   const std::string& at(const PredefinedHeader& key) const;
 
   template <std::size_t Size>
-  std::string& at(const char (&)[Size]) {
+  [[noreturn]] std::string& at(const char (&)[Size]) {
     ReportMisuse<Size>();
   }
   template <std::size_t Size>
-  const std::string& at(const char (&)[Size]) const {
+  [[noreturn]] const std::string& at(const char (&)[Size]) const {
     ReportMisuse<Size>();
   }
 

@@ -19,7 +19,7 @@ constexpr std::string_view k{{service.name}}MethodNames[] = {
   {% endfor %}
 };
 
-{% set client_qos = 'GRPC_CLIENT_QOS_' + proto.package_prefix.replace('.', '_') + '_' + service.name %}
+{% set client_qos = 'GRPC_CLIENT_QOS_' + proto.package_prefix.replace('.', '_') + service.name + 'Client'%}
 
 USERVER_NAMESPACE::ugrpc::client::ClientQos
 Parse{{service.name}}ClientQos(
@@ -50,17 +50,20 @@ constexpr USERVER_NAMESPACE::dynamic_config::Key<Parse{{service.name}}ClientQos>
     {% if not method.client_streaming %}
     const {{ method.input_type | grpc_to_cpp_name }}& request,
     {% endif %}
-    std::unique_ptr<::grpc::ClientContext> context) const {
+    std::unique_ptr<::grpc::ClientContext> context,
+    const USERVER_NAMESPACE::ugrpc::client::Qos& qos
+) const {
       return {
         USERVER_NAMESPACE::ugrpc::client::impl::CreateCallParams(
-	impl_, {{method_id}}, std::move(context), k{{service.name}}ClientQosConfig
+          impl_, {{method_id}}, std::move(context), k{{service.name}}ClientQosConfig, qos
         ),
         impl_.NextStub<{{proto.namespace}}::{{service.name}}>(),
-        &{{proto.namespace}}::{{service.name}}::Stub::PrepareAsync{{method.name}}
+        &{{proto.namespace}}::{{service.name}}::Stub::PrepareAsync{{method.name}},
         {% if method.client_streaming %}
-	    };
+      };
         {% else %}
-        ,request};
+        request,
+      };
         {% endif %}
 }
   {% endfor %}

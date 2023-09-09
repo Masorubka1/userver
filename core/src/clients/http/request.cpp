@@ -35,10 +35,6 @@ USERVER_NAMESPACE_BEGIN
 namespace clients::http {
 
 namespace {
-/// Max number of retries during calculating timeout
-constexpr int kMaxRetryInTimeout = 5;
-/// Base time for exponential backoff algorithm
-constexpr long kEBBaseTime = 25;
 
 constexpr std::string_view kHeaderExpect = "Expect";
 
@@ -78,6 +74,29 @@ constexpr utils::TrivialBiMap kAuthTypeMap = [](auto selector) {
       .Case("any_safe", ProxyAuthType::kAnySafe);
 };
 
+curl::easy::httpauth_t HttpAuthTypeToNative(HttpAuthType value) {
+  switch (value) {
+    case HttpAuthType::kBasic:
+      return curl::easy::auth_basic;
+    case HttpAuthType::kDigest:
+      return curl::easy::auth_digest;
+    case HttpAuthType::kDigestIE:
+      return curl::easy::auth_digest_ie;
+    case HttpAuthType::kNegotiate:
+      return curl::easy::auth_negotiate;
+    case HttpAuthType::kNtlm:
+      return curl::easy::auth_ntlm;
+    case HttpAuthType::kNtlmWb:
+      return curl::easy::auth_ntlm_wb;
+    case HttpAuthType::kAny:
+      return curl::easy::auth_any;
+    case HttpAuthType::kAnySafe:
+      return curl::easy::auth_any_safe;
+  }
+
+  UINVARIANT(false, "Unexpected http auth type");
+}
+
 curl::easy::proxyauth_t ProxyAuthTypeToNative(ProxyAuthType value) {
   switch (value) {
     case ProxyAuthType::kBasic:
@@ -101,20 +120,6 @@ curl::easy::proxyauth_t ProxyAuthTypeToNative(ProxyAuthType value) {
   }
 
   UINVARIANT(false, "Unexpected proxy auth type");
-}
-
-inline long max_retry_time(short number) {
-  long time_ms = 0;
-  for (short int i = 1; i < number; ++i) {
-    time_ms += kEBBaseTime * ((1 << std::min(i - 1, kMaxRetryInTimeout)) + 1);
-  }
-  return time_ms;
-}
-
-long complete_timeout(long request_timeout, short retries) {
-  return static_cast<long>(static_cast<double>(request_timeout * retries) *
-                           1.1) +
-         max_retry_time(retries);
 }
 
 bool IsUserAgentHeader(std::string_view header_name) {
@@ -221,20 +226,15 @@ Request::Request(std::shared_ptr<impl::EasyWrapper>&& wrapper,
 }
 
 ResponseFuture Request::async_perform(utils::impl::SourceLocation location) {
-  return {pimpl_->async_perform(location),
-          std::chrono::milliseconds(
-              complete_timeout(pimpl_->timeout(), pimpl_->retries())),
-          pimpl_};
+  return ResponseFuture{pimpl_->async_perform(location), pimpl_};
 }
 
 StreamedResponse Request::async_perform_stream_body(
     const std::shared_ptr<concurrent::StringStreamQueue>& queue,
     utils::impl::SourceLocation location) {
   LOG_DEBUG() << "Starting an async HTTP request with streamed response body";
-  pimpl_->async_perform_stream(queue, location);
-  auto deadline = engine::Deadline::FromDuration(
-      std::chrono::milliseconds(pimpl_->effective_timeout()));
-  return StreamedResponse(queue->GetConsumer(), deadline, pimpl_);
+  return StreamedResponse(pimpl_->async_perform_stream(queue, location),
+                          queue->GetConsumer(), pimpl_);
 }
 
 std::shared_ptr<Response> Request::perform(
@@ -344,6 +344,18 @@ Request Request::unix_socket_path(const std::string& path) && {
   return std::move(this->unix_socket_path(path));
 }
 
+Request& Request::use_ipv4() & {
+  pimpl_->easy().set_ip_resolve(curl::easy::ip_resolve_v4);
+  return *this;
+}
+Request Request::use_ipv4() && { return std::move(this->use_ipv4()); }
+
+Request& Request::use_ipv6() & {
+  pimpl_->easy().set_ip_resolve(curl::easy::ip_resolve_v6);
+  return *this;
+}
+Request Request::use_ipv6() && { return std::move(this->use_ipv6()); }
+
 Request& Request::connect_to(const ConnectTo& connect_to) & {
   pimpl_->connect_to(connect_to);
   return *this;
@@ -391,6 +403,19 @@ Request Request::headers(
     const std::initializer_list<std::pair<std::string_view, std::string_view>>&
         headers) && {
   return std::move(this->headers(headers));
+}
+
+Request& Request::http_auth_type(HttpAuthType value, bool auth_only,
+                                 std::string_view user,
+                                 std::string_view password) & {
+  pimpl_->http_auth_type(HttpAuthTypeToNative(value), auth_only, user,
+                         password);
+  return *this;
+}
+Request Request::http_auth_type(HttpAuthType value, bool auth_only,
+                                std::string_view user,
+                                std::string_view password) && {
+  return std::move(this->http_auth_type(value, auth_only, user, password));
 }
 
 Request& Request::proxy_headers(const Headers& headers) & {

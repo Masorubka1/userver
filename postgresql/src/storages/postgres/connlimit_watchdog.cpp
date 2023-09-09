@@ -14,7 +14,7 @@ constexpr CommandControl kCommandControl{std::chrono::seconds(2),
 constexpr size_t kTestsuiteConnlimit = 100;
 constexpr size_t kReservedConn = 5;
 
-constexpr size_t kMaxStepsWithError = 3;
+constexpr int kMaxStepsWithError = 3;
 constexpr size_t kFallbackConnlimit = 20;
 }  // namespace
 
@@ -84,9 +84,10 @@ void ConnlimitWatchdog::Step() {
 
     auto connlimit = max_connections / instances;
     if (connlimit == 0) connlimit = 1;
-    LOG_DEBUG() << "max_connections = " << max_connections
-                << ", instances = " << instances
-                << ", connlimit = " << connlimit;
+    LOG((connlimit_ == connlimit) ? logging::Level::kDebug
+                                  : logging::Level::kWarning)
+        << "max_connections = " << max_connections
+        << ", instances = " << instances << ", connlimit = " << connlimit;
     connlimit_ = connlimit;
 
     trx.Commit();

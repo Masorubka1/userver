@@ -60,6 +60,12 @@ add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-json2yaml)
 add_subdirectory(hello_service)
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-hello_service)
 
+add_subdirectory(websocket_service)
+add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-websocket_service)
+
+add_subdirectory(https_service)
+add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-https_service)
+
 add_subdirectory(tcp_service)
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-tcp_service)
 
@@ -83,6 +89,9 @@ if (USERVER_FEATURE_POSTGRESQL)
 
   add_subdirectory(postgres_auth)
   add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-postgres_auth)
+
+  add_subdirectory(digest_auth_service)
+  add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-digest_auth)
 
   add_subdirectory(postgres-support)
   add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}-postgres-support)

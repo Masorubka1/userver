@@ -4,13 +4,14 @@ CMAKE_COMMON_FLAGS ?= -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 CMAKE_DEBUG_FLAGS ?= -DUSERVER_SANITIZE='addr ub'
 CMAKE_RELEASE_FLAGS ?=
 CMAKE_OS_FLAGS ?=
+DOXYGEN ?= doxygen
 
 NPROCS ?= $(shell nproc)
 
 ifeq ($(KERNEL),Darwin)
 CMAKE_COMMON_FLAGS += -DUSERVER_NO_WERROR=1 -DUSERVER_CHECK_PACKAGE_VERSIONS=0 \
   -DUSERVER_DOWNLOAD_PACKAGE_CRYPTOPP=1 \
-  -DOPENSSL_ROOT_DIR=$(shell brew --prefix openssl@1.1) \
+  -DOPENSSL_ROOT_DIR=$(shell brew --prefix openssl) \
   -DUSERVER_PG_INCLUDE_DIR=$(shell pg_config --includedir) \
   -DUSERVER_PG_LIBRARY_DIR=$(shell pg_config --libdir) \
   -DUSERVER_PG_SERVER_LIBRARY_DIR=$(shell pg_config --pkglibdir) \
@@ -24,19 +25,17 @@ endif
 gen:
 	python3 scripts/external_deps/cmake_generator.py --repo-dir=. --build-dir=cmake
 
+# Requires doxygen 1.9.8+
 .PHONY: docs
 docs:
 	@rm -rf docs/*
 	@( \
 	    cat scripts/docs/doxygen.conf; \
-	    echo "LAYOUT_FILE = scripts/docs/layout_opensource.xml"; \
-	    echo "USE_MDFILE_AS_MAINPAGE = scripts/docs/en/landing.md"; \
-	    echo "HTML_HEADER = scripts/docs/header_opensource.html"; \
 	    echo 'PROJECT_BRIEF = "C++ Async Framework (beta)"'; \
 	    echo OUTPUT_DIRECTORY=docs \
-	  ) | doxygen -
+	  ) | $(DOXYGEN) -
 	@echo 'userver.tech' > docs/html/CNAME
-	@cp docs/html/df/d86/md_en_userver_404.html docs/html/404.html
+	@cp docs/html/d8/dee/md_en_2userver_2404.html docs/html/404.html || :
 	@sed -i 's|\.\./\.\./|/|g' docs/html/404.html
 
 # Debug cmake configuration

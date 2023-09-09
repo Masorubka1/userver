@@ -26,7 +26,7 @@ class LogHelper;
 
 namespace impl {
 class TagWriter;
-};  // namespace impl
+}  // namespace impl
 
 /// Extra tskv fields storage
 class LogExtra final {
@@ -85,7 +85,7 @@ class LogExtra final {
 
   /// @brief Creates a LogExtra with current thread's stacktrace if the logger
   /// log level is less or equal to DEBUG
-  static LogExtra StacktraceNocache(logging::LoggerCRef logger) noexcept;
+  static LogExtra StacktraceNocache(logging::LoggerRef logger) noexcept;
 
   /// @brief Creates a LogExtra with current thread's stacktrace if the logger
   /// log level is less or equal to DEBUG. Uses cache for
@@ -95,7 +95,7 @@ class LogExtra final {
   /// @brief Creates a LogExtra with current thread's stacktrace if the logger
   /// log level is less or equal to DEBUG. Uses cache for
   /// faster stacktrace symbolization.
-  static LogExtra Stacktrace(logging::LoggerCRef logger) noexcept;
+  static LogExtra Stacktrace(logging::LoggerRef logger) noexcept;
 
   /// @brief Adds a range of key-value pairs
   template <typename Iterator>
@@ -153,6 +153,8 @@ class LogExtra final {
 
   utils::FastPimpl<Map, kPimplSize, alignof(void*)> extra_;
 };
+
+extern const LogExtra kEmptyLogExtra;
 
 }  // namespace logging
 

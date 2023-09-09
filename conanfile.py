@@ -34,7 +34,6 @@ class UserverConan(ConanFile):
         'with_redis': [True, False],
         'with_grpc': [True, False],
         'with_clickhouse': [True, False],
-        'with_universal': [True, False],
         'with_rabbitmq': [True, False],
         'with_utest': [True, False],
         'namespace': ['ANY'],
@@ -53,7 +52,6 @@ class UserverConan(ConanFile):
         'with_redis': True,
         'with_grpc': True,
         'with_clickhouse': True,
-        'with_universal': True,
         'with_rabbitmq': True,
         'with_utest': True,
         'namespace': 'userver',
@@ -102,8 +100,6 @@ class UserverConan(ConanFile):
         self.requires('http_parser/2.9.4')
         self.requires('openssl/1.1.1s')
         self.requires('rapidjson/cci.20220822')
-        self.requires('spdlog/1.9.0')
-        self.options['spdlog'].header_only = True
         self.requires('yaml-cpp/0.7.0')
         self.requires('zlib/1.2.13')
 
@@ -161,9 +157,6 @@ class UserverConan(ConanFile):
             'USERVER_FEATURE_CLICKHOUSE'
         ] = self.options.with_clickhouse
         tool_ch.variables[
-            'USERVER_FEATURE_UNIVERSAL'
-        ] = self.options.with_universal
-        tool_ch.variables[
             'USERVER_FEATURE_RABBITMQ'
         ] = self.options.with_rabbitmq
         tool_ch.variables['USERVER_FEATURE_UTEST'] = self.options.with_utest
@@ -190,16 +183,23 @@ class UserverConan(ConanFile):
         copy(
             self,
             pattern='*',
-            dst=os.path.join(self.package_folder, 'include', 'shared'),
-            src=os.path.join(self.source_folder, 'shared', 'include'),
+            dst=os.path.join(self.package_folder, 'scripts'),
+            src=os.path.join(self.source_folder, 'scripts'),
             keep_path=True,
         )
 
         copy(
             self,
             pattern='*',
-            dst=os.path.join(self.package_folder, 'scripts'),
-            src=os.path.join(self.source_folder, 'scripts'),
+            dst=os.path.join(
+                self.package_folder, 'include', 'function_backports',
+            ),
+            src=os.path.join(
+                self.source_folder,
+                'third_party',
+                'function_backports',
+                'include',
+            ),
             keep_path=True,
         )
 
@@ -227,9 +227,8 @@ class UserverConan(ConanFile):
             )
 
         copy_component('core')
+        copy_component('universal')
 
-        if self.options.with_universal:
-            copy_component('universal')
         if self.options.with_grpc:
             copy_component('grpc')
             copy(
@@ -257,13 +256,14 @@ class UserverConan(ConanFile):
                 'userver::grpc',
             )
 
-            grpc_file = open(
-                os.path.join(self.package_folder, 'cmake', 'GrpcConan.cmake'),
-                'a+',
-            )
-            grpc_file.write('\nset(USERVER_CONAN TRUE)')
-            grpc_file.write('\nset(PYTHON "python3")')
-            grpc_file.close()
+            with open(
+                    os.path.join(
+                        self.package_folder, 'cmake', 'GrpcConan.cmake',
+                    ),
+                    'a+',
+            ) as grpc_file:
+                grpc_file.write('\nset(USERVER_CONAN TRUE)')
+                grpc_file.write('\nset(PYTHON "python3")')
         if self.options.with_utest:
             copy(
                 self,
@@ -385,7 +385,7 @@ class UserverConan(ConanFile):
                 'target': 'core',
                 'lib': 'core',
                 'requires': (
-                    ['core-internal']
+                    ['core-internal', 'universal']
                     + fmt()
                     + cctz()
                     + boost()
@@ -400,25 +400,25 @@ class UserverConan(ConanFile):
                 ),
             },
         ]
-        if self.options.with_universal:
-            userver_components.extend(
-                [
-                    {
-                        'target': 'universal',
-                        'lib': 'universal',
-                        'requires': (
-                            fmt()
-                            + cctz()
-                            + boost()
-                            + concurrentqueue()
-                            + yaml()
-                            + cryptopp()
-                            + jemalloc()
-                            + openssl()
-                        ),
-                    },
-                ],
-            )
+        userver_components.extend(
+            [
+                {
+                    'target': 'universal',
+                    'lib': 'universal',
+                    'requires': (
+                        fmt()
+                        + cctz()
+                        + boost()
+                        + concurrentqueue()
+                        + yaml()
+                        + cryptopp()
+                        + jemalloc()
+                        + openssl()
+                    ),
+                },
+            ],
+        )
+
         if self.options.with_grpc:
             userver_components.extend(
                 [
@@ -542,6 +542,12 @@ class UserverConan(ConanFile):
                     )
                 else:
                     self.cpp_info.components[conan_component].libs = [lib_name]
+                if cmake_component == 'universal':
+                    self.cpp_info.components[
+                        cmake_component
+                    ].includedirs.append(
+                        os.path.join('include', 'function_backports'),
+                    )
                 if cmake_component == 'core':
                     self.cpp_info.components[conan_component].libs.append(
                         get_lib_name('core-internal'),
@@ -552,10 +558,6 @@ class UserverConan(ConanFile):
                     ].includedirs.append(
                         os.path.join('include', cmake_component),
                     )
-                if cmake_component == 'core' or cmake_component == 'universal':
-                    self.cpp_info.components[
-                        conan_component
-                    ].includedirs.append(os.path.join('include', 'shared'))
 
                 self.cpp_info.components[conan_component].requires = requires
 

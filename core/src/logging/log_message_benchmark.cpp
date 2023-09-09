@@ -1,11 +1,11 @@
 #include <benchmark/benchmark.h>
 
+#include <ostream>
+
 #include <userver/logging/impl/logger_base.hpp>
 #include <userver/logging/impl/tag_writer.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/logging/logger.hpp>
-
-#include <ostream>
 
 #include <utils/gbench_auxilary.hpp>
 
@@ -18,8 +18,8 @@ class NoopLogger : public logging::impl::LoggerBase {
   NoopLogger() noexcept : LoggerBase(logging::Format::kRaw) {
     SetLevel(logging::Level::kInfo);
   }
-  void Log(logging::Level, std::string_view) const override {}
-  void Flush() const override {}
+  void Log(logging::Level, std::string_view) override {}
+  void Flush() override {}
 };
 
 class PrependedTagLogger final : public NoopLogger {
@@ -126,6 +126,34 @@ BENCHMARK_REGISTER_F(LogHelperBenchmark, LogStruct)
     ->RangeMultiplier(2)
     ->Range(8, 8 << 10)
     ->Complexity();
+
+struct MultipleStrings final {
+  std::string str;
+  std::size_t count{};
+};
+
+logging::LogHelper& operator<<(logging::LogHelper& lh,
+                               const MultipleStrings& strings) {
+  for (std::size_t i = 0; i < strings.count; ++i) {
+    lh << strings.str;
+  }
+  return lh;
+}
+
+BENCHMARK_DEFINE_F(LogHelperBenchmark, LogMultipleStrings)
+(benchmark::State& state) {
+  const MultipleStrings msg{Launder(std::string(state.range(0), '*')),
+                            static_cast<std::size_t>(state.range(1))};
+  for (auto _ : state) {
+    LOG_INFO() << msg;
+  }
+}
+BENCHMARK_REGISTER_F(LogHelperBenchmark, LogMultipleStrings)
+    ->Args({0, 0})
+    ->Args({1, 1})
+    ->Args({2, 2})
+    ->RangeMultiplier(2)
+    ->Ranges({{4, 32}, {4, 32}});
 
 void LogPrependedTags(benchmark::State& state) {
   const logging::DefaultLoggerGuard guard{

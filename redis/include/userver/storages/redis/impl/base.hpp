@@ -6,16 +6,13 @@
 #include <string>
 #include <vector>
 
-#include <userver/testsuite/redis_control.hpp>
+#include <userver/logging/fwd.hpp>
 #include <userver/utils/strong_typedef.hpp>
 
+#include <userver/storages/redis/command_control.hpp>
 #include <userver/storages/redis/impl/types.hpp>
 
 USERVER_NAMESPACE_BEGIN
-
-namespace logging {
-class LogHelper;
-}
 
 namespace storages::redis {
 class Client;
@@ -118,123 +115,6 @@ CmdArgs& CmdArgs::Then(Args&&... _args) {
   (PutArg(new_args, std::forward<Args>(_args)), ...);
   return *this;
 }
-
-/* Opaque Id of Redis server instance / any server instance */
-class ServerId {
- public:
-  /* Default: any server */
-  ServerId() = default;
-
-  bool IsAny() const { return id_ == -1; }
-
-  bool operator==(const ServerId& other) const { return other.id_ == id_; }
-  bool operator!=(const ServerId& other) const { return !(other == *this); }
-
-  bool operator<(const ServerId& other) const { return id_ < other.id_; }
-
-  static ServerId Generate() {
-    ServerId sid;
-    sid.id_ = next_id_++;
-    return sid;
-  }
-
-  static ServerId Invalid() { return invalid_; }
-
-  int64_t GetId() const { return id_; }
-
-  void SetDescription(std::string description) const;
-  void RemoveDescription() const;
-  std::string GetDescription() const;
-
- private:
-  static std::atomic<int64_t> next_id_;
-  static ServerId invalid_;
-
-  int64_t id_{-1};
-};
-
-struct ServerIdHasher {
-  size_t operator()(ServerId server_id) const {
-    return std::hash<size_t>{}(server_id.GetId());
-  }
-};
-
-struct RetryNilFromMaster {};
-// Can be used as an additional parameter in some commands to force retries to
-// master if slave returned a nil reply.
-static const RetryNilFromMaster kRetryNilFromMaster{};
-
-struct CommandControl {
-  enum class Strategy {
-    /* same as kEveryDc */
-    kDefault,
-    /* Send ~1/N requests to an instance with ping N ms */
-    kEveryDc,
-    /* Send requests to Redis instances located in local DC (by Conductor
-       info) */
-    kLocalDcConductor,
-    /* Send requests to 'best_dc_count' Redis instances with the min ping */
-    kNearestServerPing,
-  };
-
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  std::chrono::milliseconds timeout_single = std::chrono::milliseconds(0);
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  std::chrono::milliseconds timeout_all = std::chrono::milliseconds(0);
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  size_t max_retries = 0;
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  Strategy strategy = Strategy::kDefault;
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  size_t best_dc_count = 0; /* How many nearest DCs to use, 0 for no limit */
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  std::chrono::milliseconds max_ping_latency = std::chrono::milliseconds(0);
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  bool force_request_to_master = false;
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  bool allow_reads_from_master = false;
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  bool account_in_statistics = true;
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  std::optional<size_t> force_shard_idx;
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  size_t chunk_size = 0;
-
-  /* If set, the user wants a specific Redis instance to handle the command.
-   * Sentinel may not redirect the command to other instances.
-   * strategy is ignored.
-   */
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  ServerId force_server_id;
-
-  // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
-  bool force_retries_to_master_on_nil_reply = false;
-
-  CommandControl() = default;
-  CommandControl(std::chrono::milliseconds timeout_single,
-                 std::chrono::milliseconds timeout_all, size_t max_retries,
-                 Strategy strategy = Strategy::kDefault, int best_dc_count = 0,
-                 std::chrono::milliseconds max_ping_latency =
-                     std::chrono::milliseconds(0));
-
-  CommandControl MergeWith(const CommandControl& b) const;
-  CommandControl MergeWith(const testsuite::RedisControl&) const;
-
-  std::string ToString() const;
-
-  friend class Sentinel;
-  friend class storages::redis::Client;
-
- private:
-  CommandControl MergeWith(RetryNilFromMaster) const;
-};
-
-CommandControl::Strategy StrategyFromString(const std::string& s);
-
-const CommandControl kDefaultCommandControl = {
-    /*.timeout_single = */ std::chrono::milliseconds(500),
-    /*.timeout_all = */ std::chrono::milliseconds(2000),
-    /*.max_retries = */ 4};
 
 struct CommandsBufferingSettings {
   bool buffering_enabled{false};

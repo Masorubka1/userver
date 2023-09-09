@@ -22,7 +22,6 @@
 #include <userver/utils/assert.hpp>
 #include <userver/utils/async.hpp>
 #include <userver/utils/encoding/hex.hpp>
-#include <userver/utils/from_string.hpp>
 #include <userver/utils/overloaded.hpp>
 #include <userver/utils/rand.hpp>
 #include <utils/impl/assert_extra.hpp>
@@ -41,7 +40,10 @@ constexpr int kEBMaxPower = 5;
 /// Base time for exponential backoff algorithm
 constexpr auto kEBBaseTime = std::chrono::milliseconds{25};
 /// Least http code that we treat as bad for exponential backoff algorithm
-constexpr long kLeastBadHttpCodeForEB = 500;
+constexpr Status kLeastBadHttpCodeForEB{500};
+/// Least http code the the downstream service can use to report propagated
+/// deadline expiration
+constexpr Status kLeastHttpCodeForDeadlineExpired{400};
 
 constexpr Status kFakeHttpErrorCode{599};
 
@@ -62,7 +64,7 @@ std::error_code TestsuiteResponseHook(Status status_code,
 
     if (headers.end() != it) {
       LOG_INFO() << "Mockserver faked error of type " << it->second
-                 << tracing::impl::LogSpanAsLast{span};
+                 << tracing::impl::LogSpanAsLastNonCoro{span};
 
       const auto error_it = kTestsuiteActions.find(it->second);
       if (error_it != kTestsuiteActions.end()) {
@@ -109,11 +111,11 @@ void SetBaggageHeader(curl::easy& e) {
   }
 }
 
-bool IsTimeout(std::error_code ec) noexcept {
-  return ec ==
-         std::error_code(
-             static_cast<int>(curl::errc::EasyErrorCode::kOperationTimedout),
-             curl::errc::GetEasyCategory());
+std::exception_ptr PrepareDeadlinePassedException(std::string_view url,
+                                                  LocalStats stats) {
+  return std::make_exception_ptr(CancelException(
+      fmt::format("Timeout happened (deadline propagation), url: {}", url),
+      stats));
 }
 
 bool IsPrefix(const std::string& url,
@@ -165,8 +167,7 @@ RequestState::RequestState(
       stats_(std::move(req_stats)),
       dest_stats_(dest_stats),
       original_timeout_(kDefaultTimeout),
-      effective_timeout_(original_timeout_),
-      deadline_(server::request::GetTaskInheritedDeadline()),
+      remote_timeout_(original_timeout_),
       tracing_manager_{&tracing::kDefaultTracingManager},
       is_cancelled_(false),
       errorbuffer_(),
@@ -262,7 +263,7 @@ void RequestState::http_version(curl::easy::http_version_t version) {
 
 void RequestState::set_timeout(long timeout_ms) {
   original_timeout_ = std::chrono::milliseconds{timeout_ms};
-  effective_timeout_ = original_timeout_;
+  remote_timeout_ = original_timeout_;
 }
 
 void RequestState::retry(short retries, bool on_fails) {
@@ -289,6 +290,14 @@ void RequestState::proxy(const std::string& value) {
 
 void RequestState::proxy_auth_type(curl::easy::proxyauth_t value) {
   easy().set_proxy_auth(value);
+}
+
+void RequestState::http_auth_type(curl::easy::httpauth_t value, bool auth_only,
+                                  std::string_view user,
+                                  std::string_view password) {
+  easy().set_http_auth(value, auth_only);
+  easy().set_user(std::string{user}.c_str());
+  easy().set_password(std::string{password}.c_str());
 }
 
 void RequestState::Cancel() {
@@ -375,6 +384,7 @@ void RequestState::on_completed(std::shared_ptr<RequestState> holder,
   auto& span = holder->span_storage_->Get();
   auto& easy = holder->easy();
 
+  // TODO don't swallow errors, report them to StreamedResponse
   auto* stream_data = std::get_if<StreamData>(&holder->data_);
   if (stream_data && !stream_data->headers_promise_set.exchange(true)) {
     stream_data->headers_promise.set_value();
@@ -383,12 +393,12 @@ void RequestState::on_completed(std::shared_ptr<RequestState> holder,
 
   const auto status_code = static_cast<Status>(easy.get_response_code());
 
+  holder->CheckResponseDeadline(err, status_code);
+
   if (holder->testsuite_config_ && !err) {
     const auto& headers = holder->response()->headers();
     err = TestsuiteResponseHook(status_code, headers, span);
   }
-
-  holder->plugin_pipeline_.HookOnCompleted(*holder, *holder->response());
 
   holder->AccountResponse(err);
   const auto sockets = easy.get_num_connects();
@@ -396,8 +406,9 @@ void RequestState::on_completed(std::shared_ptr<RequestState> holder,
       [sockets](RequestStats& stats) { stats.AccountOpenSockets(sockets); });
 
   span.AddTag(tracing::kAttempts, holder->retry_.current);
-  span.AddTag(tracing::kMaxAttempts, holder->retry_.retries);
-  span.AddTag(tracing::kTimeoutMs, holder->effective_timeout_.count());
+  if (holder->remote_timeout_ != holder->original_timeout_) {
+    span.AddTag("propagated_timeout_ms", holder->remote_timeout_.count());
+  }
 
   if (err) {
     if (easy.rate_limit_error()) {
@@ -413,21 +424,21 @@ void RequestState::on_completed(std::shared_ptr<RequestState> holder,
       LOG_DEBUG() << "cURL error details: " << holder->errorbuffer_.data();
     }
 
-    std::visit(utils::Overloaded{
-                   [&holder, &err](FullBufferedData& buffered_data) {
-                     const auto cleanup_request = holder->response_move();
-                     holder->span_storage_.reset();
-                     buffered_data.promise_.set_exception(
-                         holder->PrepareException(err));
-                   },
-                   [&holder, &err](StreamData& stream_data) {
-                     holder->span_storage_.reset();
-                     if (!stream_data.headers_promise_set.exchange(true)) {
-                       stream_data.headers_promise.set_exception(
-                           holder->PrepareException(err));
-                     }
-                   }},
-               holder->data_);
+    holder->span_storage_.reset();
+
+    const utils::Overloaded visitor{
+        [&holder, &err](FullBufferedData& buffered_data) {
+          { [[maybe_unused]] const auto cleanup = holder->response_move(); }
+          auto promise = std::move(buffered_data.promise_);
+          // The task will wake up and may reuse RequestState.
+          promise.set_exception(holder->PrepareException(err));
+        },
+        [](StreamData& stream_data) {
+          auto producer = std::move(stream_data.queue_producer);
+          // The task will wake up and may reuse RequestState.
+          std::move(producer).Reset();
+        }};
+    std::visit(visitor, holder->data_);
   } else {
     span.AddTag(tracing::kHttpStatusCode, status_code);
     holder->response()->SetStatusCode(status_code);
@@ -435,22 +446,24 @@ void RequestState::on_completed(std::shared_ptr<RequestState> holder,
 
     if (!holder->response()->IsOk()) span.AddTag(tracing::kErrorFlag, true);
 
+    holder->plugin_pipeline_.HookOnCompleted(*holder, *holder->response());
+
     holder->span_storage_.reset();
 
-    std::visit(utils::Overloaded{
-                   [&holder](FullBufferedData& buffered_data) {
-                     buffered_data.promise_.set_value(holder->response_move());
-                   },
-                   [](StreamData& stream_data) {
-                     std::move(stream_data.queue_producer).Reset();
-                   }},
-               holder->data_);
+    const utils::Overloaded visitor{
+        [&holder](FullBufferedData& buffered_data) {
+          auto promise = std::move(buffered_data.promise_);
+          // The task will wake up and may reuse RequestState.
+          promise.set_value(holder->response_move());
+        },
+        [](StreamData& stream_data) {
+          auto producer = std::move(stream_data.queue_producer);
+          // The task will wake up and may reuse RequestState.
+          std::move(producer).Reset();
+        }};
+    std::visit(visitor, holder->data_);
   }
   // it is unsafe to touch any content of holder after this point!
-}
-
-bool RequestState::IsStreamBody() const {
-  return !!std::get_if<StreamData>(&data_);
 }
 
 void RequestState::on_retry(std::shared_ptr<RequestState> holder,
@@ -458,26 +471,37 @@ void RequestState::on_retry(std::shared_ptr<RequestState> holder,
   UASSERT(holder);
   UASSERT(holder->span_storage_);
   LOG_TRACE() << "RequestImpl::on_retry"
-              << tracing::impl::LogSpanAsLast{holder->span_storage_->Get()};
+              << tracing::impl::LogSpanAsLastNonCoro{
+                     holder->span_storage_->Get()};
 
-  // We do not need to retry
-  //  - if we got result and http code is good
-  //  - if we use all tries
-  //  - if error and we should not retry on error
+  // We do not need to retry:
+  // - if we got result and HTTP code is good
+  // - if we used all attempts
+  // - if failed to reach server, and we should not retry on fails
+  // - if this request was cancelled
   const bool not_need_retry =
-      (!err && holder->easy().get_response_code() < kLeastBadHttpCodeForEB) ||
+      (!err && !holder->ShouldRetryResponse()) ||
       (holder->retry_.current >= holder->retry_.retries) ||
       (err && !holder->retry_.on_fails) || holder->is_cancelled_.load();
+
   if (not_need_retry) {
-    // finish if don't need retry
+    // finish if no need to retry
     RequestState::on_completed(std::move(holder), err);
   } else {
-    holder->AccountResponse(err);
-
     // calculate backoff before retry
     const auto eb_power =
         std::clamp(holder->retry_.current - 1, 0, kEBMaxPower);
-    auto backoff = kEBBaseTime * (utils::RandRange(1 << eb_power) + 1);
+    const auto backoff = kEBBaseTime * (utils::RandRange(1 << eb_power) + 1);
+
+    holder->UpdateTimeoutFromDeadline(backoff);
+    if (holder->remote_timeout_ <= std::chrono::milliseconds::zero()) {
+      holder->deadline_expired_ = true;
+      RequestState::on_completed(std::move(holder), err);
+      return;
+    }
+
+    holder->AccountResponse(err);
+
     // increase try
     ++holder->retry_.current;
     holder->easy().mark_retry();
@@ -569,24 +593,20 @@ const std::string& RequestState::GetLoggedOriginalUrl() const noexcept {
 
 engine::Future<std::shared_ptr<Response>> RequestState::async_perform(
     utils::impl::SourceLocation location) {
-  data_ = FullBufferedData{};
+  data_.emplace<FullBufferedData>();
 
   StartNewSpan(location);
-  SetBaggageHeader(easy());
+  ResetDataForNewRequest();
 
   auto& span = span_storage_->Get();
-  span.AddTag("stream_api", "0");
+  span.AddTag("stream_api", 0);
 
-  auto future = StartNewPromise();
-  ApplyTestsuiteConfig();
-  StartStats();
+  // set place for response body
+  easy().set_sink(&response_->sink_string());
 
-  // if we need retries call with special callback
-  if (retry_.retries <= 1) {
-    perform_request([holder = shared_from_this()](std::error_code err) mutable {
-      RequestState::on_completed(std::move(holder), err);
-    });
-  } else {
+  auto future = std::get_if<FullBufferedData>(&data_)->promise_.get_future();
+
+  if (UpdateTimeoutFromDeadlineAndCheck()) {
     perform_request([holder = shared_from_this()](std::error_code err) mutable {
       RequestState::on_retry(std::move(holder), err);
     });
@@ -595,34 +615,30 @@ engine::Future<std::shared_ptr<Response>> RequestState::async_perform(
   return future;
 }
 
-void RequestState::async_perform_stream(const std::shared_ptr<Queue>& queue,
-                                        utils::impl::SourceLocation location) {
+engine::Future<void> RequestState::async_perform_stream(
+    const std::shared_ptr<Queue>& queue, utils::impl::SourceLocation location) {
   data_.emplace<StreamData>(queue->GetProducer());
 
   StartNewSpan(location);
-  SetBaggageHeader(easy());
+  ResetDataForNewRequest();
 
   auto& span = span_storage_->Get();
-  span.AddTag("stream_api", "1");
-
-  response_ = std::make_shared<Response>();
-  response()->SetStatusCode(static_cast<Status>(500));
-
-  is_cancelled_ = false;
-  retry_.current = 1;
-  effective_timeout_ = original_timeout_;
-  timeout_updated_by_deadline_ = false;
+  span.AddTag("stream_api", 1);
 
   easy().set_write_function(&RequestState::StreamWriteFunction);
   easy().set_write_data(this);
-  retry_.retries = 1;  // Force no retries
+  // Force no retries
+  retry_.retries = 1;
 
-  ApplyTestsuiteConfig();
-  StartStats();
+  auto future = std::get_if<StreamData>(&data_)->headers_promise.get_future();
 
-  perform_request([holder = shared_from_this()](std::error_code err) mutable {
-    RequestState::on_completed(std::move(holder), err);
-  });
+  if (UpdateTimeoutFromDeadlineAndCheck()) {
+    perform_request([holder = shared_from_this()](std::error_code err) mutable {
+      RequestState::on_completed(std::move(holder), err);
+    });
+  }
+
+  return future;
 }
 
 void RequestState::perform_request(curl::easy::handler_type handler) {
@@ -633,21 +649,6 @@ void RequestState::perform_request(curl::easy::handler_type handler) {
   response_->sink_string().clear();
   response_->body().clear();
 
-  UpdateTimeoutFromDeadline();
-  SetEasyTimeout(effective_timeout_);
-  if (effective_timeout_ <= std::chrono::milliseconds{0}) {
-    auto exc = PrepareDeadlineAlreadyPassedException();
-
-    std::visit(
-        utils::Overloaded{[&exc](FullBufferedData& buffered_data) {
-                            buffered_data.promise_.set_exception(exc);
-                          },
-                          [&exc](StreamData& stream_data) {
-                            stream_data.headers_promise.set_exception(exc);
-                          }},
-        data_);
-    return;
-  }
   UpdateTimeoutHeader();
 
   plugin_pipeline_.HookPerformRequest(*this);
@@ -684,51 +685,130 @@ void RequestState::SetEasyTimeout(std::chrono::milliseconds timeout) {
   easy().set_connect_timeout_ms(timeout.count());
 }
 
-void RequestState::UpdateTimeoutFromDeadline() {
-  UASSERT(effective_timeout_ >= std::chrono::milliseconds{0});
+engine::Deadline RequestState::GetDeadline() const noexcept {
+  return deadline_;
+}
+
+bool RequestState::IsDeadlineExpired() const noexcept {
+  return deadline_expired_;
+}
+
+void RequestState::UpdateTimeoutFromDeadline(
+    std::chrono::milliseconds backoff) {
+  UASSERT(remote_timeout_ >= std::chrono::milliseconds::zero());
   if (!deadline_.IsReachable()) return;
 
   const auto timeout_from_deadline =
-      std::max(std::chrono::duration_cast<std::chrono::milliseconds>(
-                   deadline_.TimeLeft()),
-               std::chrono::milliseconds{0});
+      std::clamp(std::chrono::duration_cast<std::chrono::milliseconds>(
+                     deadline_.TimeLeft() - backoff),
+                 std::chrono::milliseconds{0}, original_timeout_);
 
-  if (timeout_from_deadline < effective_timeout_) {
-    effective_timeout_ = timeout_from_deadline;
+  if (timeout_from_deadline != original_timeout_) {
+    remote_timeout_ = timeout_from_deadline;
     timeout_updated_by_deadline_ = true;
     WithRequestStats(
         [](RequestStats& stats) { stats.AccountTimeoutUpdatedByDeadline(); });
   }
 }
 
+bool RequestState::UpdateTimeoutFromDeadlineAndCheck(
+    std::chrono::milliseconds backoff) {
+  UpdateTimeoutFromDeadline(backoff);
+  if (remote_timeout_ <= std::chrono::milliseconds::zero()) {
+    deadline_expired_ = true;
+    HandleDeadlineAlreadyPassed();
+    return false;
+  }
+  return true;
+}
+
 void RequestState::UpdateTimeoutHeader() {
   if (!deadline_propagation_config_.update_header) return;
 
-  const auto old_timeout_str = easy().FindHeaderByName(
-      USERVER_NAMESPACE::http::headers::kXYaTaxiClientTimeoutMs);
-  if (old_timeout_str) {
-    try {
-      const std::chrono::milliseconds old_timeout{
-          utils::FromString<std::chrono::milliseconds::rep>(
-              std::string{*old_timeout_str})};
-      if (old_timeout <= effective_timeout_) return;
-    } catch (const std::exception& ex) {
-      LOG_LIMITED_WARNING()
-          << "Can't parse client_timeout_ms from '" << *old_timeout_str << '\'';
-    }
-  }
   easy().add_header(USERVER_NAMESPACE::http::headers::kXYaTaxiClientTimeoutMs,
-                    fmt::to_string(effective_timeout_.count()),
-                    old_timeout_str
-                        ? curl::easy::DuplicateHeaderAction::kReplace
-                        : curl::easy::DuplicateHeaderAction::kAdd);
+                    fmt::to_string(remote_timeout_.count()),
+                    curl::easy::DuplicateHeaderAction::kReplace);
 }
 
-std::exception_ptr RequestState::PrepareDeadlineAlreadyPassedException() {
+void RequestState::HandleDeadlineAlreadyPassed() {
+  auto& span = span_storage_->Get();
+  span.AddTag(tracing::kAttempts, retry_.current - 1);
+  span.AddTag(tracing::kErrorFlag, true);
+  span.AddTag("propagated_timeout_ms", 0);
+  span.AddTag("cancelled_by_deadline", 1);
+
   WithRequestStats(
       [](RequestStats& stats) { stats.AccountCancelledByDeadline(); });
-  const auto& url = GetLoggedOriginalUrl();
-  return PrepareDeadlinePassedException(url);
+
+  auto exc = PrepareDeadlinePassedException(GetLoggedOriginalUrl(),
+                                            easy().get_local_stats());
+
+  const utils::Overloaded visitor{
+      [&exc](FullBufferedData& buffered_data) {
+        auto promise = std::move(buffered_data.promise_);
+        // The task will wake up and may reuse RequestState.
+        promise.set_exception(std::move(exc));
+      },
+      [&exc](StreamData& stream_data) {
+        if (!stream_data.headers_promise_set.exchange(true)) {
+          auto promise = std::move(stream_data.headers_promise);
+          // The task will wake up and may reuse RequestState.
+          promise.set_exception(std::move(exc));
+        }
+      }};
+  std::visit(visitor, data_);
+}
+
+void RequestState::CheckResponseDeadline(std::error_code& err,
+                                         Status status_code) {
+  const std::chrono::microseconds attempt_time{easy().get_total_time_usec()};
+
+  if (!deadline_expired_ && timeout_updated_by_deadline_ &&
+      (attempt_time >= remote_timeout_ ||
+       (!err && IsDeadlineExpiredResponse(status_code)))) {
+    // The most probable cause is IsDeadlineExpiredResponse, case (1).
+    // Even if not, the ResponseFuture already has thrown or is preparing
+    // to throw a CancelledException, so reflect it here for consistency.
+    deadline_expired_ = true;
+  }
+
+  if (deadline_expired_) {
+    err = std::error_code{curl::errc::EasyErrorCode::kOperationTimedout};
+    span_storage_->Get().AddTag("cancelled_by_deadline", 1);
+    WithRequestStats(
+        [](RequestStats& stats) { stats.AccountCancelledByDeadline(); });
+  } else if (!err && IsDeadlineExpiredResponse(status_code)) {
+    // IsDeadlineExpiredResponse, case (2) happened.
+    err = std::error_code{curl::errc::EasyErrorCode::kOperationTimedout};
+  }
+}
+
+bool RequestState::IsDeadlineExpiredResponse(Status status_code) {
+  // There are two cases where deadline expires in the downstream service:
+  //
+  // 1. We used all of our own deadline for the attempt. Our deadline and
+  // the downstream service deadline have expired at about the same time.
+  // This case SHOULD NOT be retried.
+  //
+  // 2. We set a "small" timeout for the attempt that is less than our
+  // own deadline. The downstream service deadline (taken from the
+  // timeout) has expired, but deadline of the current task has not yet
+  // expired. This case SHOULD be retried.
+  return (deadline_propagation_config_.update_header &&
+          status_code >= kLeastHttpCodeForDeadlineExpired &&
+          response_->headers().contains(
+              USERVER_NAMESPACE::http::headers::kXYaTaxiDeadlineExpired));
+}
+
+bool RequestState::ShouldRetryResponse() {
+  const auto status_code = static_cast<Status>(easy().get_response_code());
+
+  if (IsDeadlineExpiredResponse(status_code)) {
+    // See IsDeadlineExpiredResponse, case (2).
+    return !timeout_updated_by_deadline_ && retry_.on_fails;
+  }
+
+  return status_code >= kLeastBadHttpCodeForEB;
 }
 
 void RequestState::AccountResponse(std::error_code err) {
@@ -738,7 +818,7 @@ void RequestState::AccountResponse(std::error_code err) {
       std::chrono::duration_cast<std::chrono::microseconds>(
           easy().time_to_start());
 
-  WithRequestStats([&, this](RequestStats& stats) {
+  WithRequestStats([this, err, attempts, time_to_start](RequestStats& stats) {
     stats.StoreTimeToStart(time_to_start);
     if (err)
       stats.FinishEc(err, attempts);
@@ -748,36 +828,43 @@ void RequestState::AccountResponse(std::error_code err) {
 }
 
 std::exception_ptr RequestState::PrepareException(std::error_code err) {
-  if (timeout_updated_by_deadline_ && IsTimeout(err)) {
-    WithRequestStats(
-        [](RequestStats& stats) { stats.AccountCancelledByDeadline(); });
-    return PrepareDeadlinePassedException(easy().get_effective_url());
+  if (deadline_expired_) {
+    return PrepareDeadlinePassedException(easy().get_effective_url(),
+                                          easy().get_local_stats());
   }
 
   return http::PrepareException(err, easy().get_effective_url(),
                                 easy().get_local_stats());
 }
 
-std::exception_ptr RequestState::PrepareDeadlinePassedException(
-    std::string_view url) {
-  return std::make_exception_ptr(CancelException(
-      fmt::format("Timeout happened (deadline propagation), url: {}", url),
-      easy().get_local_stats()));
+void RequestState::ThrowDeadlineExpiredException() {
+  // This method may be called in parallel with request handling, fetching
+  // effective_url_ or local stats is unsafe.
+  std::rethrow_exception(
+      PrepareDeadlinePassedException(GetLoggedOriginalUrl(), LocalStats{}));
 }
 
-engine::Future<std::shared_ptr<Response>> RequestState::StartNewPromise() {
-  auto* buffered_data = std::get_if<FullBufferedData>(&data_);
+void RequestState::ResetDataForNewRequest() {
+  SetBaggageHeader(easy());
 
   response_ = std::make_shared<Response>();
-  response()->SetStatusCode(static_cast<Status>(500));
-  easy().set_sink(&(response_->sink_string()));  // set place for response body
+  response_->SetStatusCode(Status::InternalServerError);
 
   is_cancelled_ = false;
   retry_.current = 1;
-  effective_timeout_ = original_timeout_;
+  remote_timeout_ = original_timeout_;
+  deadline_ = server::request::GetTaskInheritedDeadline();
+  deadline_expired_ = false;
   timeout_updated_by_deadline_ = false;
 
-  return buffered_data->promise_.get_future();
+  ApplyTestsuiteConfig();
+
+  // Ignore deadline propagation when setting cURL timeout to avoid closing
+  // connections on deadline expiration. The connection will still be closed if
+  // the original timeout is exceeded.
+  SetEasyTimeout(original_timeout_);
+
+  StartStats();
 }
 
 size_t RequestState::StreamWriteFunction(char* ptr, size_t size, size_t nmemb,
@@ -790,7 +877,7 @@ size_t RequestState::StreamWriteFunction(char* ptr, size_t size, size_t nmemb,
   LOG_DEBUG() << fmt::format(
                      "Got bytes in stream API chunk, chunk of ({} bytes)",
                      actual_size)
-              << tracing::impl::LogSpanAsLast{rs.span_storage_->Get()};
+              << tracing::impl::LogSpanAsLastNonCoro{rs.span_storage_->Get()};
 
   std::string buffer(ptr, actual_size);
   auto& queue_producer = stream_data->queue_producer;
@@ -858,6 +945,8 @@ void RequestState::StartNewSpan(utils::impl::SourceLocation location) {
                                                   request_editable_instance);
   plugin_pipeline_.HookCreateSpan(*this);
   span.AddTag(tracing::kHttpUrl, GetLoggedOriginalUrl());
+  span.AddTag(tracing::kMaxAttempts, retry_.retries);
+  span.AddTag(tracing::kTimeoutMs, original_timeout_.count());
 
   // Span is local to a Request, it is not related to current coroutine
   span.DetachFromCoroStack();
@@ -880,7 +969,7 @@ void RequestState::WithRequestStats(const Func& func) {
 }
 
 void RequestState::ResolveTargetAddress(clients::dns::Resolver& resolver) {
-  const auto deadline = engine::Deadline::FromDuration(effective_timeout_);
+  const auto deadline = engine::Deadline::FromDuration(remote_timeout_);
 
   const MaybeOwnedUrl target{proxy_url_, easy()};
   const std::string hostname = target.Get().GetHostPtr().get();

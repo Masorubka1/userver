@@ -28,13 +28,11 @@ LoggerPtr MakeSimpleLogger(const std::string& name, impl::SinkPtr sink,
 }
 
 impl::SinkPtr MakeStderrSink() {
-  static auto sink = std::make_shared<impl::BufferedUnownedFileSink>(stderr);
-  return sink;
+  return std::make_unique<impl::BufferedUnownedFileSink>(stderr);
 }
 
 impl::SinkPtr MakeStdoutSink() {
-  static auto sink = std::make_shared<impl::BufferedUnownedFileSink>(stdout);
-  return sink;
+  return std::make_unique<impl::BufferedUnownedFileSink>(stdout);
 }
 
 }  // namespace
@@ -51,14 +49,19 @@ LoggerPtr MakeStdoutLogger(const std::string& name, Format format,
 
 LoggerPtr MakeFileLogger(const std::string& name, const std::string& path,
                          Format format, Level level) {
-  return MakeSimpleLogger(name, std::make_shared<impl::BufferedFileSink>(path),
+  return MakeSimpleLogger(name, std::make_unique<impl::BufferedFileSink>(path),
                           level, format);
 }
 
 namespace impl {
 
 void LogRaw(LoggerBase& logger, Level level, std::string_view message) {
-  logger.Log(level, message);
+  std::string message_with_newline;
+  message_with_newline.reserve(message.size() + 1);
+  message_with_newline.append(message);
+  message_with_newline.push_back('\n');
+
+  logger.Log(level, message_with_newline);
 }
 
 }  // namespace impl

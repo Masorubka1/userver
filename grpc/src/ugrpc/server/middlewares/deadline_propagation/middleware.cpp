@@ -1,8 +1,8 @@
 #include "middleware.hpp"
 
 #include <userver/dynamic_config/snapshot.hpp>
+#include <userver/server/handlers/impl/deadline_propagation_config.hpp>
 #include <userver/server/request/task_inherited_data.hpp>
-#include <userver/utils/impl/userver_experiments.hpp>
 
 #include <ugrpc/impl/internal_tag.hpp>
 #include <ugrpc/server/impl/server_configs.hpp>
@@ -33,6 +33,11 @@ bool CheckAndSetupDeadline(tracing::Span& span, grpc::ServerContext& context,
                            std::string_view method_name,
                            ugrpc::impl::RpcStatisticsScope& statistics_scope,
                            const dynamic_config::Snapshot& config) {
+  if (!config[USERVER_NAMESPACE::server::handlers::impl::
+                  kDeadlinePropagationEnabled]) {
+    return true;
+  }
+
   auto opt_deadline = TryExtractDeadline(context.deadline());
   if (!opt_deadline) {
     return true;
@@ -47,9 +52,7 @@ bool CheckAndSetupDeadline(tracing::Span& span, grpc::ServerContext& context,
   statistics_scope.OnDeadlinePropagated();
   span.AddNonInheritableTag("cancelled_by_deadline", cancel_by_deadline);
 
-  if (cancel_by_deadline &&
-      utils::impl::kGrpcServerDeadlinePropagationExperiment.IsEnabled() &&
-      config[impl::kServerCancelTaskByDeadline]) {
+  if (cancel_by_deadline && config[impl::kServerCancelTaskByDeadline]) {
     // Experiment and config are enabled
     statistics_scope.CancelledByDeadlinePropagation();
     return false;

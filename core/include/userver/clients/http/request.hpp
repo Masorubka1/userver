@@ -58,6 +58,17 @@ enum class HttpVersion {
   k2PriorKnowledge,  ///< HTTP/2 only (without Upgrade)
 };
 
+enum class HttpAuthType {
+  kBasic,      ///< "basic"
+  kDigest,     ///< "digest"
+  kDigestIE,   ///< "digest_ie"
+  kNegotiate,  ///< "negotiate"
+  kNtlm,       ///< "ntlm"
+  kNtlmWb,     ///< "ntlm_wb"
+  kAny,        ///< "any"
+  kAnySafe,    ///< "any_safe"
+};
+
 enum class ProxyAuthType {
   kBasic,      ///< "basic"
   kDigest,     ///< "digest"
@@ -157,6 +168,11 @@ class Request final {
                    std::pair<std::string_view, std::string_view>>& headers) &;
   Request headers(const std::initializer_list<
                   std::pair<std::string_view, std::string_view>>& headers) &&;
+  /// Sets http auth type to use.
+  Request& http_auth_type(HttpAuthType value, bool auth_only,
+                          std::string_view user, std::string_view password) &;
+  Request http_auth_type(HttpAuthType value, bool auth_only,
+                         std::string_view user, std::string_view password) &&;
   /// Proxy headers for request as map
   Request& proxy_headers(const Headers& headers) &;
   Request proxy_headers(const Headers& headers) &&;
@@ -232,6 +248,13 @@ class Request final {
   /// of establishing a TCP connection to a host.
   Request& unix_socket_path(const std::string& path) &;
   Request unix_socket_path(const std::string& path) &&;
+
+  /// Set CURL_IPRESOLVE_V4 for ipv4 resolving
+  Request& use_ipv4() &;
+  Request use_ipv4() &&;
+  /// Set CURL_IPRESOLVE_V6 for ipv6 resolving
+  Request& use_ipv6() &;
+  Request use_ipv6() &&;
 
   /// Set CURLOPT_CONNECT_TO option
   /// @warning connect_to argument must outlive Request

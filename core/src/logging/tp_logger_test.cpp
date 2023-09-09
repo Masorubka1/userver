@@ -1,11 +1,10 @@
 #include <logging/tp_logger.hpp>
 
 #include <gmock/gmock.h>
-#include <boost/algorithm/string.hpp>
 
+#include <userver/engine/async.hpp>
 #include <userver/engine/task/cancel.hpp>
 #include <userver/utest/utest.hpp>
-#include <userver/utils/statistics/pretty_format.hpp>
 #include <userver/utils/statistics/storage.hpp>
 #include <userver/utils/statistics/testing.hpp>
 
@@ -15,7 +14,7 @@ USERVER_NAMESPACE_BEGIN
 
 namespace {
 
-using QueueOverflowBehavior = logging::LoggerConfig::QueueOverflowBehavior;
+using QueueOverflowBehavior = logging::QueueOverflowBehavior;
 
 constexpr std::size_t kLoggingTestIterations = 400;
 constexpr std::size_t kLoggingRecursionDepth = 5;
@@ -59,8 +58,8 @@ class LoggingTestCoro : public LoggingTestBase {
           writer = logger->GetStatistics();
         });
 
-    logger->StartAsync(engine::current_task::GetTaskProcessor(), queue_size_max,
-                       on_overflow);
+    logger->StartConsumerTask(engine::current_task::GetTaskProcessor(),
+                              queue_size_max, on_overflow);
 
     // Tracing should not break the TpLogger
     logger->SetLevel(logging::Level::kTrace);
@@ -107,7 +106,7 @@ class LoggingTestCoro : public LoggingTestBase {
               engine::current_task::GetCancellationToken().RequestCancel();
             }
             if (mode & kTestLogSync && i == kLoggingTestIterations / 4 * 3) {
-              logger->SwitchToSyncMode();
+              logger->StopConsumerTask();
             }
           }
         }
@@ -128,7 +127,7 @@ class LoggingTestCoro : public LoggingTestBase {
       std_thread.join();
     }
 
-    logger->SwitchToSyncMode();
+    logger->StopConsumerTask();
 
     auto logs = GetStreamString();
     for (std::size_t thread_index = 0; thread_index < thread_count;
@@ -258,7 +257,7 @@ TEST_F(LoggingTest, TpLoggerBasicToSyncNoop) {
       << "Misconfigured test. Should not be run in coroutine environment";
   auto logger = GetStreamLogger();
 
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 }
 
 TEST_F(LoggingTest, TpLoggerBasicToSyncNoopTwice) {
@@ -266,8 +265,8 @@ TEST_F(LoggingTest, TpLoggerBasicToSyncNoopTwice) {
       << "Misconfigured test. Should not be run in coroutine environment";
   auto logger = GetStreamLogger();
 
-  logger->SwitchToSyncMode();
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
+  logger->StopConsumerTask();
 }
 
 UTEST_F(LoggingTestCoro, TpLoggerNoop) {
@@ -297,13 +296,13 @@ UTEST_F(LoggingTestCoro, TpLoggerBasic) {
 
 UTEST_F(LoggingTestCoro, TpLoggerNoopAsyncToSync) {
   auto logger = StartAsyncLogger();
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 }
 
 UTEST_F(LoggingTestCoro, TpLoggerNoopAsyncToSyncTwice) {
   auto logger = StartAsyncLogger();
-  logger->SwitchToSyncMode();
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
+  logger->StopConsumerTask();
 }
 
 UTEST_F(LoggingTestCoro, TpLoggerBasicAsync) {
@@ -312,7 +311,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsync) {
   LOG_INFO_TO(logger) << "Some log";
   logger->Flush();
   EXPECT_THAT(LoggedText(), testing::HasSubstr("Some log"));
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   EXPECT_EQ(GetRecordsCount(), 1);
 
   EXPECT_EQ(GetMetric("total"), 1);
@@ -365,7 +364,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncMetrics) {
   LOG_TRACE_TO(logger) << "Trace log";
 
   logger->Flush();
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   EXPECT_EQ(GetRecordsCount(), 18);
   EXPECT_EQ(GetMetric("total"), 28);
   EXPECT_EQ(GetMetric("dropped"), 10);
@@ -380,7 +379,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncMetrics) {
 UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncToSyncBeforeLog) {
   auto logger = StartAsyncLogger();
 
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   LOG_INFO_TO(logger) << "Some log";
   logger->Flush();
   EXPECT_THAT(LoggedText(), testing::HasSubstr("Some log"));
@@ -399,7 +398,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncToSyncBeforeFlush) {
   auto logger = StartAsyncLogger();
 
   LOG_INFO_TO(logger) << "Some log";
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   logger->Flush();
   EXPECT_THAT(LoggedText(), testing::HasSubstr("Some log"));
 
@@ -418,7 +417,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncToSyncAfterFlush) {
 
   LOG_INFO_TO(logger) << "Some log";
   logger->Flush();
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   EXPECT_THAT(LoggedText(), testing::HasSubstr("Some log"));
 
   EXPECT_EQ(GetMetric("total"), 1);
@@ -439,7 +438,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncToSyncFlushOverflow) {
     // Smoke test that Flush is not lost and not overflowed
     logger->Flush();
   }
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   EXPECT_THAT(LoggedText(), testing::HasSubstr("Some log"));
 
   EXPECT_EQ(GetMetric("total"), 1);
@@ -456,7 +455,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicSyncFlushOverflow) {
   auto logger = StartAsyncLogger(2);
 
   LOG_INFO_TO(logger) << "Some log";
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
   for (std::size_t i = 0; i < kLoggingTestIterations; ++i) {
     // Smoke test that Flush is not lost and not overflowed
     logger->Flush();
@@ -479,7 +478,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncOverflow) {
   for (std::size_t i = 0; i < kLoggingTestIterations; ++i) {
     LOG_INFO_TO(logger) << i;
   }
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 
   EXPECT_GE(GetRecordsCount(), 1) << "Nothing was logged";
   EXPECT_LT(GetRecordsCount(), kLoggingTestIterations) << "Nothing was skipped";
@@ -504,7 +503,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncOverflowCancelled) {
       engine::current_task::GetCancellationToken().RequestCancel();
     }
   }
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 
   EXPECT_GE(GetRecordsCount(), 1) << "Nothing was logged";
   EXPECT_LT(GetRecordsCount(), kLoggingTestIterations) << "Nothing was skipped";
@@ -533,7 +532,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncOverflowFlushCancelled) {
       logger->Flush();
     }
   }
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 
   EXPECT_GE(GetRecordsCount(), 1) << "Nothing was logged";
   EXPECT_LT(GetRecordsCount(), kLoggingTestIterations) << "Nothing was skipped";
@@ -548,7 +547,7 @@ UTEST_F(LoggingTestCoro, TpLoggerBasicAsyncOverflowBlocking) {
   for (std::size_t i = 0; i < kLoggingTestIterations; ++i) {
     LOG_INFO_TO(logger) << i;
   }
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 
   const auto logs = GetStreamString();
   for (std::size_t i = 0; i < kLoggingTestIterations; ++i) {
@@ -567,7 +566,7 @@ UTEST_F(LoggingTestCoro, TpLoggerFlush) {
   LOG_INFO_TO(logger) << "3";
   LOG_TO(logger, logging::Level::kNone) << "oops";
   LOG_INFO_TO(logger) << "4";
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 
   EXPECT_THAT(GetStreamString(), testing::HasSubstr("text=1"));
   EXPECT_THAT(GetStreamString(), testing::HasSubstr("text=2"));
@@ -591,7 +590,7 @@ UTEST_F(LoggingTestCoro, TpLoggerFlushMultiple) {
       logger->Flush();
     }
   }
-  logger->SwitchToSyncMode();
+  logger->StopConsumerTask();
 
   const auto logs = GetStreamString();
   for (std::size_t i = 0; i < kLoggingTestIterations; ++i) {

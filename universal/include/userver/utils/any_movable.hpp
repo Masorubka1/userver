@@ -14,13 +14,13 @@ USERVER_NAMESPACE_BEGIN
 /// Utilities
 namespace utils {
 
-/// @ingroup userver_containers
+/// @ingroup userver_universal userver_containers
 ///
 /// @brief Replacement for `std::any` that is not copyable. It allows to store
 /// non-copyable and even non-movable types.
 ///
 /// Usage example:
-/// @snippet shared/src/utils/any_movable_test.cpp  AnyMovable example usage
+/// @snippet universal/src/utils/any_movable_test.cpp  AnyMovable example usage
 class AnyMovable final {
  public:
   /// Creates an empty `AnyMovable`

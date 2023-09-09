@@ -215,6 +215,47 @@ struct ValidatingSharedCallback {
   }
 };
 
+struct AuthCallback {
+  std::shared_ptr<std::size_t> responses_200 = std::make_shared<std::size_t>(0);
+  std::shared_ptr<std::size_t> responses_401 = std::make_shared<std::size_t>(0);
+
+  HttpResponse operator()(const HttpRequest& request) const {
+    LOG_INFO() << "HTTP Server receive: " << request;
+
+    // If no authorization header: send "auth" request
+    if (request.find("Authorization: Digest") == std::string::npos) {
+      ++(*responses_401);
+      return {
+          "HTTP/1.1 401 Unauthorized\r\n"
+          "WWW-Authenticate: Digest realm=\"REALM\", charset=\"UTF-8\", "
+          "nonce=\"NONCE\", qop=\"auth\"\r\n"
+          "Content-Type: text/html\r\n"
+          "Content-Length: 303\r\n"
+          "Server: SimpleServer\r\n"
+          "\r\n"
+          "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\"\n"
+          "         "
+          "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"
+          "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\" "
+          "lang=\"en\">\n"
+          " <head>\n"
+          "  <title>401 Unauthorized</title>\n"
+          " </head>\n"
+          " <body>\n"
+          "  <h1>401 Unauthorized</h1>\n"
+          " </body>\n"
+          "</html>\n",
+          HttpResponse::kWriteAndClose};
+    }
+
+    ++(*responses_200);
+    return {
+        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: "
+        "text/html\r\nContent-Length: 7\r\n\r\nSuccess",
+        HttpResponse::kWriteAndClose};
+  }
+};
+
 HttpResponse put_validate_callback(const HttpRequest& request) {
   LOG_INFO() << "HTTP Server receive: " << request;
 
@@ -1475,24 +1516,24 @@ UTEST(HttpClient, RequestReuseDifferentUrlAndTimeout) {
   EXPECT_EQ(*shared_echo_callback.responses_200, kFewRepetitions + 1);
 }
 
-UTEST(HttpClient, DISABLED_TestsuiteAllowedUrls) {
+UTEST_DEATH(HttpClientDeathTest, TestsuiteAllowedUrls) {
   auto task = utils::Async("test", [] {
     const utest::SimpleServer http_server{EchoCallback{}};
     auto http_client_ptr = utest::CreateHttpClient();
     http_client_ptr->SetTestsuiteConfig({{"http://126.0.0.1"}, {}});
 
-    EXPECT_NO_THROW((void)http_client_ptr->CreateRequest()
-                        .get("http://126.0.0.1")
-                        .async_perform());
+    UEXPECT_NO_THROW((void)http_client_ptr->CreateRequest()
+                         .get("http://126.0.0.1")
+                         .async_perform());
     UEXPECT_DEATH((void)http_client_ptr->CreateRequest()
                       .get("http://12.0.0.1")
                       .async_perform(),
                   ".*");
 
     http_client_ptr->SetAllowedUrlsExtra({"http://12.0"});
-    EXPECT_NO_THROW((void)http_client_ptr->CreateRequest()
-                        .get("http://12.0.0.1")
-                        .async_perform());
+    UEXPECT_NO_THROW((void)http_client_ptr->CreateRequest()
+                         .get("http://12.0.0.1")
+                         .async_perform());
     UEXPECT_DEATH((void)http_client_ptr->CreateRequest()
                       .get("http://13.0.0.1")
                       .async_perform(),
@@ -1522,6 +1563,45 @@ UTEST(HttpClient, TestConnectTo) {
   }
 }
 
+UTEST(HttpClient, TestUseIPv4v6) {
+  EchoCallback cb;
+  const utest::SimpleServer http_server{cb, utest::SimpleServer::kTcpIpV4};
+
+  auto http_client_ptr = utest::CreateHttpClient();
+
+  // Good case
+  {
+    auto request =
+        http_client_ptr->CreateRequest()
+            .post("http://localhost:" + std::to_string(http_server.GetPort()),
+                  kTestData)
+            .retry(1)
+            .http_version(clients::http::HttpVersion::k11)
+            .timeout(kTimeout)
+            .use_ipv4();
+    {
+      const auto res = request.perform();
+
+      EXPECT_EQ(res->body(), kTestData);
+    }
+  }
+
+  // Bad case
+  {
+    auto request =
+        http_client_ptr->CreateRequest()
+            .post("http://localhost:" + std::to_string(http_server.GetPort()),
+                  kTestData)
+            .retry(1)
+            .http_version(clients::http::HttpVersion::k11)
+            .timeout(kTimeout)
+            .use_ipv6();
+
+    UEXPECT_THROW(request.perform()->status_code(),
+                  clients::http::NetworkProblemException);
+  }
+}
+
 UTEST(HttpClient, CheckSchema) {
   auto http_client_ptr = utest::CreateHttpClient();
   UEXPECT_NO_THROW(http_client_ptr->CreateRequest().url("http://localhost"));
@@ -1536,6 +1616,45 @@ UTEST(HttpClient, CheckSchema) {
                 clients::http::BadArgumentException);
   UEXPECT_THROW(http_client_ptr->CreateRequest().url("telnet://localhost"),
                 clients::http::BadArgumentException);
+}
+
+UTEST(HttpClient, DigestAuth) {
+  AuthCallback auth_callback;
+  const utest::SimpleServer http_server{auth_callback};
+  auto http_client = utest::CreateHttpClient();
+  // Good case
+  {
+    auto request = http_client->CreateRequest()
+                       .get(http_server.GetBaseUrl())
+                       .retry(1)
+                       .verify(true)
+                       .http_version(clients::http::HttpVersion::k11)
+                       .timeout(kTimeout)
+                       .http_auth_type(clients::http::HttpAuthType::kDigest,
+                                       false, "user", "password");
+
+    const auto res = request.perform();
+
+    EXPECT_EQ(*auth_callback.responses_401, 1);
+    EXPECT_EQ(*auth_callback.responses_200, 1);
+    EXPECT_EQ(res->status_code(), 200);
+    EXPECT_EQ(res->body(), "Success");
+  }
+  // Bad case
+  {
+    auto request = http_client->CreateRequest()
+                       .get(http_server.GetBaseUrl())
+                       .retry(1)
+                       .verify(true)
+                       .http_version(clients::http::HttpVersion::k11)
+                       .timeout(kTimeout);
+
+    const auto res = request.perform();
+
+    EXPECT_EQ(*auth_callback.responses_401, 2);
+    EXPECT_EQ(*auth_callback.responses_200, 1);
+    EXPECT_EQ(res->status_code(), 401);
+  }
 }
 
 USERVER_NAMESPACE_END

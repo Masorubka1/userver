@@ -13,12 +13,12 @@ USERVER_NAMESPACE_BEGIN
 
 namespace utils {
 
-/// @ingroup userver_containers
+/// @ingroup userver_universal userver_containers
 ///
 /// @brief a helper class to perform actions on scope exit
 ///
 /// Usage example:
-/// @snippet shared/src/utils/scope_guard_test.cpp  ScopeGuard usage example
+/// @snippet universal/src/utils/scope_guard_test.cpp  ScopeGuard usage example
 ///
 /// @note exception handling is done in such way that std::terminate will not be
 /// called: in the normal path of execution, exception from handler will

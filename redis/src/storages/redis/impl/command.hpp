@@ -31,9 +31,13 @@ struct Command : public std::enable_shared_from_this<Command> {
 
   static logging::LogExtra PrepareLogExtra();
 
+  // Returns Span details only if we are not already running within a Span.
+  const logging::LogExtra& GetLogExtra() const;
+
   CmdArgs args;
   ReplyCallback callback;
   std::chrono::steady_clock::time_point start_handling_time;
+  tracing::Span* original_span_debug{nullptr};
   logging::LogExtra log_extra;
   CommandControl control;
   size_t instance_idx = 0;
@@ -45,11 +49,11 @@ struct Command : public std::enable_shared_from_this<Command> {
   std::string name;
 };
 
-CommandPtr PrepareCommand(
-    CmdArgs&& args, ReplyCallback callback,
-    const CommandControl& command_control = kDefaultCommandControl,
-    int counter = 0, bool asking = false, size_t instance_idx = 0,
-    bool redirected = false, bool read_only = false);
+CommandPtr PrepareCommand(CmdArgs&& args, ReplyCallback callback,
+                          const CommandControl& command_control = {},
+                          int counter = 0, bool asking = false,
+                          size_t instance_idx = 0, bool redirected = false,
+                          bool read_only = false);
 
 }  // namespace redis
 

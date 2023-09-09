@@ -71,8 +71,8 @@ TEST_F(LoggingTest, TskvEncodeKeyWithDot) {
   logging::LogExtra le;
   le.Extend("http.port.ipv4", "4040");
   LOG_CRITICAL() << "line 1\nline 2" << le;
-  EXPECT_THAT(GetStreamString(),
-              testing::HasSubstr("line 1\\nline 2\thttp_port_ipv4=4040"));
+  EXPECT_THAT(GetStreamString(), testing::HasSubstr("line 1\\nline 2"));
+  EXPECT_THAT(GetStreamString(), testing::HasSubstr("http_port_ipv4=4040"));
 }
 
 TEST_F(LoggingTest, LogFormat) {
@@ -416,8 +416,7 @@ TEST_F(LoggingTest, RangeOverflow) {
   std::iota(range.begin(), range.end(), 0);
 
   LOG_CRITICAL() << range;
-  EXPECT_TRUE(LoggedTextContains("1850, 1851, ...8148 more"))
-      << "Actual logged text: " << LoggedText();
+  EXPECT_THAT(LoggedText(), testing::HasSubstr("1850, 1851, ...8148 more"));
 }
 
 TEST_F(LoggingTest, ImmediateRangeOverflow) {
@@ -425,8 +424,7 @@ TEST_F(LoggingTest, ImmediateRangeOverflow) {
   std::vector<int> range{42};
 
   LOG_CRITICAL() << filler << range;
-  EXPECT_TRUE(LoggedTextContains("[...1 more]"))
-      << "Actual logged text: " << LoggedText();
+  EXPECT_THAT(LoggedText(), testing::HasSubstr("[...1 more]"));
 }
 
 TEST_F(LoggingTest, NestedRangeOverflow) {
@@ -434,10 +432,9 @@ TEST_F(LoggingTest, NestedRangeOverflow) {
       {"1", "2", "3"}, {std::string(100000, 'A'), "4", "5"}, {"6", "7"}};
 
   LOG_CRITICAL() << range;
-  EXPECT_TRUE(LoggedTextContains(R"([["1", "2", "3"], ["AAA)"))
-      << "Actual logged text: " << LoggedText();
-  EXPECT_TRUE(LoggedTextContains(R"(AAA...", ...2 more], ...1 more])"))
-      << "Actual logged text: " << LoggedText();
+  EXPECT_THAT(LoggedText(), testing::HasSubstr(R"([["1", "2", "3"], ["AAA)"));
+  EXPECT_THAT(LoggedText(),
+              testing::HasSubstr(R"(AAA...", ...2 more], ...1 more])"));
 }
 
 TEST_F(LoggingTest, MapOverflow) {
@@ -447,10 +444,9 @@ TEST_F(LoggingTest, MapOverflow) {
   }
 
   LOG_CRITICAL() << map;
-  EXPECT_TRUE(LoggedTextContains("[0: 0, 1: 1,"))
-      << "Actual logged text: " << LoggedText();
-  EXPECT_TRUE(LoggedTextContains("1017: 1017, 1018: 1018, ...8981 more]"))
-      << "Actual logged text: " << LoggedText();
+  EXPECT_THAT(LoggedText(), testing::HasSubstr("[0: 0, 1: 1,"));
+  EXPECT_THAT(LoggedText(),
+              testing::HasSubstr("1017: 1017, 1018: 1018, ...8981 more]"));
 }
 
 TEST_F(LoggingTest, FilesystemPath) {
@@ -486,9 +482,9 @@ TEST_F(LoggingTest, LogLimitedDisabled) {
 }
 
 TEST_F(LoggingTest, CustomLoggerLevel) {
-  auto sstream_data = std::make_shared<LoggingSinkWithStream>();
-  auto logger = MakeNamedStreamLogger("other-logger", sstream_data,
-                                      logging::Format::kTskv);
+  const auto logger_data =
+      MakeNamedStreamLogger("other-logger", logging::Format::kTskv);
+  const auto& logger = logger_data.logger;
 
   // LOG_*_TO() must use its own log level, not default logger's one
   SetDefaultLoggerLevel(logging::Level::kCritical);
@@ -500,11 +496,11 @@ TEST_F(LoggingTest, CustomLoggerLevel) {
   LOG_LIMITED_DEBUG_TO(*logger) << "most";
   logging::LogFlush(*logger);
 
-  auto result = sstream_data->sstream.str();
-  EXPECT_NE(result.find("test"), std::string::npos);
-  EXPECT_NE(result.find("mest"), std::string::npos);
-  EXPECT_EQ(result.find("tost"), std::string::npos);
-  EXPECT_EQ(result.find("most"), std::string::npos);
+  const auto result = logger_data.stream.str();
+  EXPECT_THAT(result, testing::HasSubstr("test"));
+  EXPECT_THAT(result, testing::HasSubstr("mest"));
+  EXPECT_THAT(result, testing::Not(testing::HasSubstr("tost")));
+  EXPECT_THAT(result, testing::Not(testing::HasSubstr("most")));
 }
 
 TEST_F(LoggingTest, NullLogger) {
@@ -539,39 +535,22 @@ TEST_F(LoggingTest, Noexceptness) {
     EXPECT_TRUE(noexcept(logging::LogHelper(logging::GetNullLogger(),
                                             logging::Level::kCritical)));
 
-    EXPECT_TRUE(noexcept(logging::LogHelper(logging::GetNullLogger(),
-                                            logging::Level::kCritical)));
+    const auto logger_ptr = logging::MakeNullLogger();
+    EXPECT_TRUE(
+        noexcept(logging::LogHelper(logger_ptr, logging::Level::kCritical)));
 
     EXPECT_TRUE(noexcept(
         logging::LogHelper(logging::LoggerPtr{}, logging::Level::kCritical)));
 
-    EXPECT_TRUE(noexcept(LOG_TRACE_TO(logging::GetNullLogger())));
-    EXPECT_TRUE(noexcept(LOG_DEBUG_TO(logging::GetNullLogger())));
-    EXPECT_TRUE(noexcept(LOG_INFO_TO(logging::GetNullLogger())));
-    EXPECT_TRUE(noexcept(LOG_WARNING_TO(logging::GetNullLogger())));
-    EXPECT_TRUE(noexcept(LOG_ERROR_TO(logging::GetNullLogger())));
-    EXPECT_TRUE(noexcept(LOG_CRITICAL_TO(logging::GetNullLogger())));
+    EXPECT_TRUE(noexcept(
+        std::declval<const logging::impl::StaticLogEntry&>().ShouldNotLog(
+            logging::GetDefaultLogger(), logging::Level::kInfo)));
+    EXPECT_TRUE(noexcept(
+        USERVER_IMPL_LOG_TO(logging::GetNullLogger(), logging::Level::kInfo)));
 
-    EXPECT_TRUE(noexcept(LOG_TRACE_TO(logging::GetNullLogger()) << "Test"));
-    EXPECT_TRUE(noexcept(LOG_DEBUG_TO(logging::GetNullLogger()) << "Test"));
-    EXPECT_TRUE(noexcept(LOG_INFO_TO(logging::GetNullLogger()) << "Test"));
-    EXPECT_TRUE(noexcept(LOG_WARNING_TO(logging::GetNullLogger()) << "Test"));
-    EXPECT_TRUE(noexcept(LOG_ERROR_TO(logging::GetNullLogger()) << "Test"));
-    EXPECT_TRUE(noexcept(LOG_CRITICAL_TO(logging::GetNullLogger()) << "Test"));
-
-    using logging::LogExtra;
-    EXPECT_TRUE(noexcept(LOG_TRACE_TO(logging::GetNullLogger())
-                         << LogExtra::Stacktrace()));
-    EXPECT_TRUE(noexcept(LOG_DEBUG_TO(logging::GetNullLogger())
-                         << LogExtra::Stacktrace()));
-    EXPECT_TRUE(noexcept(LOG_INFO_TO(logging::GetNullLogger())
-                         << LogExtra::Stacktrace()));
-    EXPECT_TRUE(noexcept(LOG_WARNING_TO(logging::GetNullLogger())
-                         << LogExtra::Stacktrace()));
-    EXPECT_TRUE(noexcept(LOG_ERROR_TO(logging::GetNullLogger())
-                         << LogExtra::Stacktrace()));
-    EXPECT_TRUE(noexcept(LOG_CRITICAL_TO(logging::GetNullLogger())
-                         << LogExtra::Stacktrace()));
+    EXPECT_TRUE(noexcept(std::declval<logging::LogHelper&>() << "Test"));
+    EXPECT_TRUE(noexcept(std::declval<logging::LogHelper&>()
+                         << logging::LogExtra::Stacktrace()));
   }
 }
 
