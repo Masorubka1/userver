@@ -1,16 +1,19 @@
+#pragma once
+
+#include <userver/storages/aerospike/client.hpp>
+
 #include <optional>
 #include <string>
 #include <vector>
 
-#include <engine/ev/thread_control.hpp>
-#include <engine/task/task_processor.hpp>
+#include <userver/engine/task/task_processor_fwd.hpp>
 #include <engine/task/task_processor_config.hpp>
 #include <engine/task/task_processor_pools.hpp>
+#include <engine/task/task_processor.hpp>
 #include <userver/engine/task/task.hpp>
 
-#include "client.hpp"
-#include "aerospike_impl.hpp"
-#include "thread_pools.hpp"
+#include <userver/storages/aerospike/aerospike_impl.hpp>
+#include <userver/storages/aerospike/thread_pools.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -19,8 +22,8 @@ namespace aerospike_nsp {
 Client::Client(
     std::shared_ptr<engine::impl::TaskProcessorPools> sentiel_thread_pool,
     std::shared_ptr<engine::impl::TaskProcessorPools> aerospike_thread_pool,
-    const engine::TaskProcessorConfig sentiel_conf,
-    const engine::TaskProcessorConfig aerospike_conf,
+    const engine::TaskProcessorConfig& sentiel_conf,
+    const engine::TaskProcessorConfig& aerospike_conf,
     std::string host = "127.0.0.1", uint16_t port = 3000) {
   /*    engine::TaskProcessor{
           [] {
@@ -35,9 +38,9 @@ Client::Client(
                                                            sentiel_thread_pool);
 
   impl_ = std::make_unique<AerospikeImpl>(
-      host, port,
-      std::make_unique<engine::TaskProcessor>(aerospike_conf,
-                                              aerospike_thread_pool));
+      host, port
+      /*std::make_unique<engine::TaskProcessor>(aerospike_conf,
+                                              aerospike_thread_pool)*/);
 }
 
 template <class T, class U = T>

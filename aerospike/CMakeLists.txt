@@ -46,15 +46,16 @@ target_link_libraries(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME} PUBLIC ${AEROSPIKE_LIB})
 
+#add if don`t work
+#/usr/include/aerospike  # Include Aerospike headers
+#/usr/include/citrusleaf
 target_include_directories(
   ${PROJECT_NAME}
   PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/utils
-  /usr/include/aerospike  # Include Aerospike headers
-  /usr/include/citrusleaf
   PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/utils
 )
 target_include_directories (${PROJECT_NAME} PRIVATE
     $<TARGET_PROPERTY:userver-core,INCLUDE_DIRECTORIES>

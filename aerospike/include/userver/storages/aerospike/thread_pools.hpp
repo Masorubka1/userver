@@ -1,9 +1,7 @@
 #pragma once
 
-#include <engine/coro/pool.hpp>
-#include <engine/task/task_processor_pools.hpp>
 #include <memory>
-#include <userver/engine/task/task_processor_fwd.hpp>
+
 
 USERVER_NAMESPACE_BEGIN
 
@@ -11,13 +9,17 @@ namespace engine::impl {
 class TaskProcessorPools;
 }  // namespace engine::impl
 
+namespace engine::ev {
+class ThreadPoolConfig;
+} // namespace engine::ev
+
 namespace aerospike_nsp {
 
-class TaskProcessorPools {
+class TaskProcessor_Pools {
  public:
-  TaskProcessorPools(size_t sentinel_thread_pool_size,
+  TaskProcessor_Pools(size_t sentinel_thread_pool_size,
                      size_t aerospike_thread_pool_size);
-  ~TaskProcessorPools();
+  ~TaskProcessor_Pools();
 
   std::shared_ptr<engine::impl::TaskProcessorPools>
   GetSentinelTaskProcessorPools() const;

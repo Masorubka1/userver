@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include <aerospike/aerospike.h>
+//#include <aerospike/aerospike.h>
 
 #include <userver/logging/log.hpp>
 
@@ -17,7 +17,7 @@ inline void error(Error& err) {
              << err->file << ":" << err->line << "]\n";
 }
 
-std::string dump_bin(const as_bin* p_bin) {
+inline std::string dump_bin(const as_bin* p_bin) {
   std::string ans;
   if (!p_bin) {
     LOG_INFO() << "  null as_bin object";

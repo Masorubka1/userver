@@ -10,7 +10,7 @@
 #include <userver/engine/future.hpp>
 
 #include "../utils/wrapper_structs.hpp"
-#include "responce.hpp"
+#include <userver/storages/aerospike/responce.hpp>
 
 USERVER_NAMESPACE_BEGIN
 

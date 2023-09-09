@@ -16,14 +16,14 @@
 #include <userver/engine/async.hpp>
 #include <userver/engine/task/task.hpp>
 #include <userver/engine/task/task_processor_fwd.hpp>
+//#include <userver/engine/task/task_processor.hpp>
 #include <userver/logging/log.hpp>
 
 #include "../utils/parcer.hpp"
 #include "../utils/wrapper_structs.hpp"
 
-#include "client.hpp"
-#include "request.hpp"
-#include "responce.hpp"
+#include <userver/storages/aerospike/request.hpp>
+#include <userver/storages/aerospike/responce.hpp>
 
 USERVER_NAMESPACE_BEGIN
 
@@ -52,9 +52,9 @@ class AerospikeImpl {
     Remove,
   };
 
-  explicit AerospikeImpl(std::string host, uint16_t port,
-                         std::unique_ptr<engine::TaskProcessor> task_processor)
-      : tasks_(std::move(task_processor)) {
+  explicit AerospikeImpl(std::string host, uint16_t port
+                         /*std::unique_ptr<engine::TaskProcessor> task_processor*/)
+      /*: tasks_(std::move(task_processor))*/ {
     as_config_init(&config_);
     as_config_add_host(&config_, host.c_str(), port);
 
@@ -85,7 +85,8 @@ class AerospikeImpl {
   template <class T>
   Responce<bool> key_create(Request<T> r) {
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Responce<bool> rsp(std::move(&r.key), true);
@@ -104,7 +105,8 @@ class AerospikeImpl {
   template <class T>
   Responce<bool> key_set(Request<T> r) {
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Record rec;
@@ -125,7 +127,8 @@ class AerospikeImpl {
   template <class T>
   Responce<T> key_operate(Request<T> r) {  //?
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Record rec;
@@ -146,7 +149,8 @@ class AerospikeImpl {
   template <class T>
   Responce<std::string> key_get(Request<T> r) {
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Record rec;
@@ -167,7 +171,8 @@ class AerospikeImpl {
   template <class T>
   Responce<std::map<std::string, T>> key_select(Request<T> r) {
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Record rec;
@@ -192,7 +197,8 @@ class AerospikeImpl {
   template <class T>
   Responce<bool> key_exists(Request<T> r) {
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Record rec;
@@ -224,7 +230,8 @@ class AerospikeImpl {
   template <class T>
   Responce<bool> key_remove(Request<T> r) {
     return engine::AsyncNoSpan(
-               tasks_.get(),
+               /*tasks_.get()*/
+               engine::current_task::GetTaskProcessor(),
                [this](Request<T> r) {
                  Error err = std::move(connect());
                  Responce<bool> rsp(std::move(&r.key), true);
@@ -252,7 +259,7 @@ class AerospikeImpl {
 
   Aerospike client_;
   Config config_;
-  std::unique_ptr<engine::TaskProcessor> tasks_;
+  //std::unique_ptr<engine::TaskProcessor> tasks_;
 };
 
 }  // namespace aerospike_nsp
